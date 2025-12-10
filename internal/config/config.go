@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"sync/atomic"
 
 	"github.com/spf13/viper"
@@ -20,6 +21,12 @@ type RedisCfg struct {
 	Address string `mapstructure:"address"`
 	Timeout string `mapstructure:"timeout"`
 	Pwd     string `mapstructure:"pwd"`
+}
+
+type RedisWrapper struct {
+	Version string          `json:"version"`
+	Key     string          `json:"key"`
+	Data    json.RawMessage `json:"data"`
 }
 
 var IotCfgStore atomic.Value                  // 存储 Config

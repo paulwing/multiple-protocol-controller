@@ -3,9 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
-	"multiple-protocol-controller/internal/collector"
 	"multiple-protocol-controller/internal/config"
-	"multiple-protocol-controller/internal/control"
 	"multiple-protocol-controller/internal/service"
 	"multiple-protocol-controller/internal/store"
 	"multiple-protocol-controller/pkg/logger"
@@ -24,16 +22,16 @@ func Run(ctx context.Context) error {
 		return err
 	}
 
-	if err := control.Init(ctx, cfg); err != nil {
-		return fmt.Errorf("control init failed: %w", err)
-	}
+	// if err := control.Init(ctx, cfg); err != nil {
+	// 	return fmt.Errorf("control init failed: %w", err)
+	// }
 
-	if err := collector.InitResultWriter(ctx, cfg); err != nil {
-		return fmt.Errorf("collector writer init failed: %w", err)
-	}
+	// if err := collector.InitResultWriter(ctx, cfg); err != nil {
+	// 	return fmt.Errorf("collector writer init failed: %w", err)
+	// }
 
 	g, ctx := errgroup.WithContext(ctx)
-	collector.Start(ctx)
+	// collector.Start(ctx)
 	// 1. 捕获系统信号
 	g.Go(func() error {
 		sigCh := make(chan os.Signal, 1)
