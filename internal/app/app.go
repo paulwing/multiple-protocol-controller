@@ -32,7 +32,7 @@ func Run(ctx context.Context) error {
 
 	g, ctx := errgroup.WithContext(ctx)
 	// collector.Start(ctx)
-	// 1. 捕获系统信号
+	// 1. 捕获系统信号111
 	g.Go(func() error {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
