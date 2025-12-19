@@ -2,7 +2,7 @@ package config
 
 type DeviceConfig struct {
 	ID          string `json:"id"`
-	DeviceType  string `json:"deviceType"`
+	DeviceType  int    `json:"deviceType"`
 	GatewayInfo struct {
 		ID         string `json:"id"`
 		IP         string `json:"ip"`

@@ -16,7 +16,7 @@ import (
 )
 
 func Run(ctx context.Context) error {
-	// 1. 加载配置
+	// 0. 加载配置
 	cfg, err := config.Load("configs/config.toml")
 	if err != nil {
 		return err
@@ -32,7 +32,7 @@ func Run(ctx context.Context) error {
 
 	g, ctx := errgroup.WithContext(ctx)
 	// collector.Start(ctx)
-	// 1. 捕获系统信号111
+	// 1. 捕获系统信号
 	g.Go(func() error {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

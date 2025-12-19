@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"multiple-protocol-controller/internal/config"
-	"multiple-protocol-controller/internal/control"
 	"multiple-protocol-controller/internal/store"
 	"multiple-protocol-controller/pkg/logger"
 
@@ -48,10 +47,10 @@ func SubRedisChannel(ctx context.Context, redisClient *store.RedisClient, cfg *c
 				logger.Log.Error("device command parse error:", zap.Error(err))
 				return nil
 			}
-			sendErr := control.ProcessCommand(cmdParams)
-			if sendErr != nil {
-				logger.Log.Error("send command error:", zap.Error(sendErr))
-			}
+			// sendErr := control.ProcessCommand(cmdParams)
+			// if sendErr != nil {
+			// 	logger.Log.Error("send command error:", zap.Error(sendErr))
+			// }
 			return nil
 		},
 	}

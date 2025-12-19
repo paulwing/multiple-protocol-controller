@@ -49,6 +49,7 @@ func GetIoTCfg(ctx context.Context, iotCfgStore *atomic.Value, cfg *config.Confi
 		return err
 	}
 	fmt.Println(iotDevices)
+	// todo: to be continued...
 	// fmtErr := validateIoTCfg(&iotCfg)
 	// if fmtErr != nil {
 	// 	return fmtErr
