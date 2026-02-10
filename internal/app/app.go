@@ -22,6 +22,15 @@ func Run(ctx context.Context) error {
 		return err
 	}
 
+	redisHostBase := os.Getenv("REDIS_HOST")
+	redisPortBase := os.Getenv("REDIS_PORT")
+	redisPasswordBase := os.Getenv("REDIS_PWD")
+	if redisHostBase != "" && redisPortBase != "" {
+		cfg.Redis.Address = redisHostBase + ":" + redisPortBase
+	}
+	if redisPasswordBase != "" {
+		cfg.Redis.Pwd = redisPasswordBase
+	}
 	// if err := control.Init(ctx, cfg); err != nil {
 	// 	return fmt.Errorf("control init failed: %w", err)
 	// }
