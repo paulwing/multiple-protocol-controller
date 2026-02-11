@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"multiple-protocol-controller/internal/config"
+	"multiple-protocol-controller/internal/collector"
 	"multiple-protocol-controller/internal/service"
 	"multiple-protocol-controller/internal/store"
 	"multiple-protocol-controller/pkg/logger"
@@ -22,22 +23,14 @@ func Run(ctx context.Context) error {
 		return err
 	}
 
-	redisHostBase := os.Getenv("REDIS_HOST")
-	redisPortBase := os.Getenv("REDIS_PORT")
-	redisPasswordBase := os.Getenv("REDIS_PWD")
-	if redisHostBase != "" && redisPortBase != "" {
-		cfg.Redis.Address = redisHostBase + ":" + redisPortBase
-	}
-	if redisPasswordBase != "" {
-		cfg.Redis.Pwd = redisPasswordBase
-	}
 	// if err := control.Init(ctx, cfg); err != nil {
 	// 	return fmt.Errorf("control init failed: %w", err)
 	// }
 
-	// if err := collector.InitResultWriter(ctx, cfg); err != nil {
-	// 	return fmt.Errorf("collector writer init failed: %w", err)
-	// }
+	if err := collector.InitResultWriter(ctx, cfg); err != nil {
+		return fmt.Errorf("collector writer init failed: %w", err)
+	}
+	collector.Start(ctx)
 
 	g, ctx := errgroup.WithContext(ctx)
 	// collector.Start(ctx)

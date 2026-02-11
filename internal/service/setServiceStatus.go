@@ -18,11 +18,11 @@ func SetServiceStatus(ctx context.Context, redisClient *store.RedisClient) error
 		for {
 			select {
 			case <-ticker.C:
-				currentTime := time.Now()
+				currentTime := time.Now().UnixMilli()
 				statusInfo := map[string]interface{}{
 					"time":           currentTime,
-					"status":         2,
-					"currentVersion": "collector based on go 1.0",
+					"status":         0,
+					"currentVersion": "1.0",
 				}
 				infoStr, _ := json.Marshal(statusInfo)
 				setErr := redisClient.SetWithTimeout(config.ServerStatus, string(infoStr), 0, 2*time.Second)

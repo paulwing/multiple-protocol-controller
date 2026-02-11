@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"multiple-protocol-controller/internal/collector"
 	"multiple-protocol-controller/internal/config"
+	"multiple-protocol-controller/internal/conn"
 	"multiple-protocol-controller/internal/store"
 	"multiple-protocol-controller/pkg/logger"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -23,7 +26,7 @@ func GetIoTCfg(ctx context.Context, iotCfgStore *atomic.Value, cfg *config.Confi
 	}
 	defer redisClient.Close()
 
-	var iotDevices []config.DeviceConfig
+	var iotCfg []config.DeviceConfig
 	// 并发获取
 	g, _ := errgroup.WithContext(rootCtx)
 	g.Go(func() error {
@@ -39,7 +42,7 @@ func GetIoTCfg(ctx context.Context, iotCfgStore *atomic.Value, cfg *config.Confi
 			return fmt.Errorf("unmarshal wrapper for %s failed: %w", config.DeviceCfg, err)
 		}
 
-		if err := json.Unmarshal(wrapper.Data, &iotDevices); err != nil {
+		if err := json.Unmarshal(wrapper.Data, &iotCfg); err != nil {
 			return fmt.Errorf("unmarshal data for %s failed: %w", config.DeviceCfg, err)
 		}
 		return nil
@@ -48,35 +51,37 @@ func GetIoTCfg(ctx context.Context, iotCfgStore *atomic.Value, cfg *config.Confi
 	if err := g.Wait(); err != nil {
 		return err
 	}
-	fmt.Println(iotDevices)
-	// todo: to be continued...
-	// fmtErr := validateIoTCfg(&iotCfg)
-	// if fmtErr != nil {
-	// 	return fmtErr
-	// }
-	// fmt.Println(len(iotCfg.IoTProperties), len(iotCfg.IoTProducts))
 
-	// collector.RefreshResultWriter(iotCfg)
-	// iotCfgStore.Store(iotCfg)
+	iotCfg = slices.DeleteFunc(iotCfg, func(v config.DeviceConfig) bool {
+		return v.Disabled
+	})
 
-	// if err := syncConnectionManager(rootCtx, iotCfg); err != nil {
-	// 	return err
-	// }
+	runtimeCfg, buildErr := config.BuildRuntimeConfig(iotCfg)
+	if buildErr != nil {
+		return buildErr
+	}
 
-	// collector.UpdateSnapshot(iotCfg)
+	collector.RefreshResultWriter(runtimeCfg)
+	iotCfgStore.Store(runtimeCfg)
+
+	if err := syncConnectionManager(rootCtx, runtimeCfg); err != nil {
+		return err
+	}
+
+	collector.UpdateSnapshot(runtimeCfg)
 
 	return nil
 }
 
-// func syncConnectionManager(ctx context.Context, iotCfg config.IotCfgType) error {
-// 	if _, exists := conn.Default(); !exists {
-// 		if _, err := conn.InitDefault(ctx, iotCfg); err != nil {
-// 			return fmt.Errorf("init tcp manager failed: %w", err)
-// 		}
-// 		return nil
-// 	}
-// 	if err := conn.RefreshDefault(iotCfg); err != nil {
-// 		return fmt.Errorf("refresh tcp manager failed: %w", err)
-// 	}
-// 	return nil
-// }
+func syncConnectionManager(ctx context.Context, iotCfg config.IotCfgType) error {
+	if _, exists := conn.Default(); !exists {
+		if _, err := conn.InitDefault(ctx, iotCfg); err != nil {
+			return fmt.Errorf("init tcp manager failed: %w", err)
+		}
+		return nil
+	}
+	if err := conn.RefreshDefault(iotCfg); err != nil {
+		return fmt.Errorf("refresh tcp manager failed: %w", err)
+	}
+	return nil
+}

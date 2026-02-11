@@ -1,7 +1,8 @@
 runmode = 'dev'
 
 [redis]
-# address = "49.233.192.84:6379"
-address = "192.168.2.181:6379"
+# address = "49.233.192.84:16379"
+# address = "192.168.2.181:6379"
+address = "192.168.2.25:6379"
 timeout = 500
 pwd = "QAZxswZXC"
