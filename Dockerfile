@@ -1,6 +1,6 @@
 FROM alpine:3.12.0
 
-# 安装必要的运行时工具
+# 安装必要的运行时工具1
 RUN apk add --no-cache ca-certificates tzdata curl
 
 # 创建应用用户
