@@ -1,5 +1,5 @@
 /tmp
-logs/*
+logs/**
 !logs/.gitkeep
 main
 multiple-protocol-controller
