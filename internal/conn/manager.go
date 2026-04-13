@@ -450,6 +450,9 @@ func collectDeviceMeta(cfg config.IotCfgType) (map[string]deviceMeta, map[string
 	devices := make(map[string]deviceMeta, len(cfg.Devices))
 	gateways := make(map[string]gatewayMeta)
 	for _, dev := range cfg.Devices {
+		if !isTCPManagedProtocol(dev.Config.Protocol) {
+			continue
+		}
 		serial := strings.TrimSpace(dev.Config.SerialNumber)
 		if serial == "" {
 			continue
@@ -497,6 +500,15 @@ func collectDeviceMeta(cfg config.IotCfgType) (map[string]deviceMeta, map[string
 		}
 	}
 	return devices, gateways
+}
+
+func isTCPManagedProtocol(protocol string) bool {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "modbus", "modbusrtu", "modbustcp":
+		return true
+	default:
+		return false
+	}
 }
 
 var ErrGatewayBusy = errors.New("gateway is executing an exclusive operation")

@@ -4,3 +4,4 @@ logs/*
 main
 multiple-protocol-controller
 .gocache/
+.claude

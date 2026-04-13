@@ -24,7 +24,7 @@ func buildBatchQueries(device config.DeviceRuntime, params []config.ModbusParam)
 	grouped := make(map[int][]*config.ModbusParam)
 	for i := range params {
 		param := &params[i]
-		if param.Passive {
+		if param.ReadDisabled {
 			continue
 		}
 		if !isReadFunctionCode(param.FunctionCode) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -12,8 +13,9 @@ import (
 	"multiple-protocol-controller/internal/collector"
 	"multiple-protocol-controller/internal/config"
 	"multiple-protocol-controller/internal/conn"
-	opcuaClient "multiple-protocol-controller/internal/opcua"
 	"multiple-protocol-controller/internal/protocol"
+	bacnetProtocol "multiple-protocol-controller/internal/protocol/bacnet"
+	opcuaProtocol "multiple-protocol-controller/internal/protocol/opcua"
 	"multiple-protocol-controller/internal/store"
 	"multiple-protocol-controller/pkg/logger"
 
@@ -52,6 +54,124 @@ func ProcessCommand(redisClient *store.RedisClient, cmd config.Command4MPC) erro
 			dispatchResults = append(dispatchResults, attrDispatchResult{DeviceSerial: serial, Identify: "", Err: errors.New(errMsg)})
 			continue
 		}
+
+		if isBacnetProtocol(device.Config.Protocol) {
+			commands := cfg.DeviceBacnetCmdBySerial[serial]
+			for key, rawVal := range item {
+				if key == "device_id" {
+					continue
+				}
+				commandMeta, found := findBacnetCommand(commands, key)
+				if !found {
+					logger.Log.Warn("bacnet command mapping not found", zap.String("serial", serial), zap.String("identify", key))
+					errMsg = "command mapping not found"
+					continue
+				}
+
+				timeout := time.Duration(device.ResponseTimeoutMs)
+				if timeout == 0 {
+					timeout = 5000
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), timeout*time.Millisecond)
+				value, err := bacnetProtocol.NormalizeValue(rawVal, commandMeta.DataType)
+				if err != nil {
+					logger.Log.Warn("bacnet normalize command value failed", zap.String("serial", serial), zap.String("identify", key), zap.Error(err))
+					errMsg = err.Error()
+					cancel()
+					continue
+				}
+
+				bacnetCfg := conn.BacnetConfig{
+					IP:             device.GatewayIP,
+					Port:           device.GatewayPort,
+					DeviceInstance: device.BacnetDeviceInstance,
+				}
+				if err := conn.DefaultBacnetManager().WritePresentValue(ctx, bacnetCfg, commandMeta.ObjectType, commandMeta.ObjectInstance, value); err != nil {
+					logger.Log.Warn("bacnet send command failed", zap.String("serial", serial), zap.String("identify", key), zap.Error(err))
+					errMsg = err.Error()
+				} else {
+					success = true
+					errMsg = ""
+				}
+				cancel()
+			}
+
+			dispatchResults = append(dispatchResults, attrDispatchResult{
+				DeviceSerial: serial,
+				Identify:     "",
+				Err: func() error {
+					if success {
+						return nil
+					}
+					if errMsg == "" {
+						return nil
+					}
+					return errors.New(errMsg)
+				}(),
+			})
+			continue
+		}
+
+		// 处理 MQTT 协议
+		if isMqttProtocol(device.Config.Protocol) {
+			commands := cfg.DeviceMqttCmdBySerial[serial]
+			for key, rawVal := range item {
+				if key == "device_id" {
+					continue
+				}
+				commandMeta, found := findMqttCommand(commands, key)
+				if !found {
+					logger.Log.Warn("mqtt command mapping not found", zap.String("serial", serial), zap.String("identify", key))
+					errMsg = "command mapping not found"
+					continue
+				}
+
+				// 构建 MQTT 配置
+				mqttCfg := conn.MqttConfig{
+					Broker:       device.MqttBroker,
+					ClientID:     device.MqttClientID,
+					Username:     device.MqttUsername,
+					Password:     device.MqttPassword,
+					Qos:          device.MqttQos,
+					KeepAlive:    device.MqttKeepAlive,
+					CleanSession: device.MqttCleanSession,
+				}
+
+				// 构建消息载荷
+				payload := buildMqttPayload(commandMeta.Path, commandMeta.DataType, rawVal)
+				payloadBytes, err := json.Marshal(payload)
+				if err != nil {
+					logger.Log.Warn("mqtt build payload failed", zap.String("serial", serial), zap.String("identify", key), zap.Error(err))
+					errMsg = err.Error()
+					continue
+				}
+
+				// 发布消息
+				if err := conn.DefaultMqttManager().Publish(mqttCfg, commandMeta.PublishTopic, payloadBytes, commandMeta.Qos); err != nil {
+					logger.Log.Warn("mqtt publish command failed", zap.String("serial", serial), zap.String("identify", key), zap.Error(err))
+					errMsg = err.Error()
+				} else {
+					success = true
+					errMsg = ""
+				}
+			}
+
+			dispatchResults = append(dispatchResults, attrDispatchResult{
+				DeviceSerial: serial,
+				Identify:     "",
+				Err: func() error {
+					if success {
+						return nil
+					}
+					if errMsg == "" {
+						return nil
+					}
+					return errors.New(errMsg)
+				}(),
+			})
+			continue
+		}
+
 		if isOpcuaProtocol(device.Config.Protocol) {
 			commands := cfg.DeviceOpcuaCmdBySerial[serial]
 			for key, rawVal := range item {
@@ -70,7 +190,7 @@ func ProcessCommand(redisClient *store.RedisClient, cmd config.Command4MPC) erro
 					timeout = 5000
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), timeout*time.Millisecond)
-				value, err := opcuaClient.NormalizeValue(rawVal, commandMeta.DataType)
+				value, err := opcuaProtocol.NormalizeValue(rawVal, commandMeta.DataType)
 				if err != nil {
 					logger.Log.Warn("opcua normalize command value failed", zap.String("serial", serial), zap.String("identify", key), zap.Error(err))
 					errMsg = err.Error()
@@ -78,14 +198,14 @@ func ProcessCommand(redisClient *store.RedisClient, cmd config.Command4MPC) erro
 					continue
 				}
 
-				cfg := opcuaClient.Config{
+				cfg := conn.OpcuaConfig{
 					Endpoint:       device.OpcuaEndpoint,
 					SecurityPolicy: device.OpcuaSecurityPolicy,
 					SecurityMode:   device.OpcuaSecurityMode,
 					Username:       device.Config.Username,
 					Password:       device.Config.Password,
 				}
-				if err := opcuaClient.Default().WriteNode(ctx, cfg, commandMeta.NodeID, value); err != nil {
+				if err := conn.DefaultOpcuaManager().WriteNode(ctx, cfg, commandMeta.NodeID, value); err != nil {
 					logger.Log.Warn("opcua send command failed", zap.String("serial", serial), zap.String("identify", key), zap.Error(err))
 					errMsg = err.Error()
 				} else {
@@ -257,8 +377,21 @@ func findOpcuaCommand(cmds []config.OpcuaCommand, identify string) (config.Opcua
 	return config.OpcuaCommand{}, false
 }
 
+func findBacnetCommand(cmds []config.BacnetCommand, identify string) (config.BacnetCommand, bool) {
+	for _, cmd := range cmds {
+		if cmd.Identify == identify {
+			return cmd, true
+		}
+	}
+	return config.BacnetCommand{}, false
+}
+
 func isOpcuaProtocol(protocol string) bool {
 	return strings.EqualFold(strings.TrimSpace(protocol), "opcua")
+}
+
+func isBacnetProtocol(protocol string) bool {
+	return strings.EqualFold(strings.TrimSpace(protocol), "bacnet")
 }
 
 type attrDispatchResult struct {
@@ -380,4 +513,85 @@ func collectAttrFailures(items []attrDispatchResult) string {
 		}
 	}
 	return strings.Join(failures, "; ")
+}
+
+func isMqttProtocol(protocol string) bool {
+	return strings.EqualFold(strings.TrimSpace(protocol), "mqtt")
+}
+
+func findMqttCommand(cmds []config.MqttCommand, identify string) (config.MqttCommand, bool) {
+	for _, cmd := range cmds {
+		if cmd.Identify == identify {
+			return cmd, true
+		}
+	}
+	return config.MqttCommand{}, false
+}
+
+func buildMqttPayload(path string, dataType string, value interface{}) map[string]interface{} {
+	// 如果有路径，构建嵌套结构
+	if path != "" {
+		result := make(map[string]interface{})
+		parts := strings.Split(path, ".")
+		current := result
+		for i := 0; i < len(parts)-1; i++ {
+			current[parts[i]] = make(map[string]interface{})
+			current = current[parts[i]].(map[string]interface{})
+		}
+		current[parts[len(parts)-1]] = normalizeCommandValue(dataType, value)
+		return result
+	}
+	// 无路径，直接返回值
+	return map[string]interface{}{
+		"value": normalizeCommandValue(dataType, value),
+	}
+}
+
+func normalizeCommandValue(dataType string, value interface{}) interface{} {
+	dt := strings.ToLower(strings.TrimSpace(dataType))
+	switch dt {
+	case "bool":
+		switch v := value.(type) {
+		case bool:
+			return v
+		case string:
+			return strings.ToLower(v) == "true" || v == "1"
+		case float64:
+			return v != 0
+		default:
+			return value
+		}
+	case "int", "int32", "int64":
+		switch v := value.(type) {
+		case int64:
+			return v
+		case float64:
+			return int64(v)
+		case string:
+			var i int64
+			if _, err := fmt.Sscanf(v, "%d", &i); err == nil {
+				return i
+			}
+			return value
+		default:
+			return value
+		}
+	case "float", "double":
+		switch v := value.(type) {
+		case float64:
+			return v
+		case int64:
+			return float64(v)
+		case string:
+			var f float64
+			if _, err := fmt.Sscanf(v, "%f", &f); err == nil {
+				return f
+			}
+			return value
+		default:
+			return value
+		}
+	default:
+		return value
+	}
 }

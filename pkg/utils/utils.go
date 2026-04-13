@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"fmt"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -150,4 +152,194 @@ func Ternary[T any](cond bool, a, b T) T {
 		return a
 	}
 	return b
+}
+
+func CoerceBool(val interface{}) (bool, error) {
+	switch v := val.(type) {
+	case bool:
+		return v, nil
+	case int:
+		return v != 0, nil
+	case int64:
+		return v != 0, nil
+	case uint64:
+		return v != 0, nil
+	case float64:
+		return v != 0, nil
+	case string:
+		s := strings.TrimSpace(strings.ToLower(v))
+		switch s {
+		case "1", "true", "t", "yes", "y":
+			return true, nil
+		case "0", "false", "f", "no", "n":
+			return false, nil
+		default:
+			return false, fmt.Errorf("invalid bool string %q", v)
+		}
+	default:
+		return false, fmt.Errorf("unsupported bool type %T", val)
+	}
+}
+
+func CoerceInt64(val interface{}) (int64, error) {
+	switch v := val.(type) {
+	case int:
+		return int64(v), nil
+	case int8:
+		return int64(v), nil
+	case int16:
+		return int64(v), nil
+	case int32:
+		return int64(v), nil
+	case int64:
+		return v, nil
+	case uint:
+		return int64(v), nil
+	case uint8:
+		return int64(v), nil
+	case uint16:
+		return int64(v), nil
+	case uint32:
+		return int64(v), nil
+	case uint64:
+		if v > math.MaxInt64 {
+			return 0, fmt.Errorf("%d exceeds int64 range", v)
+		}
+		return int64(v), nil
+	case float32:
+		return int64(v), nil
+	case float64:
+		return int64(v), nil
+	case string:
+		if strings.Contains(v, ".") {
+			f, err := strconv.ParseFloat(v, 64)
+			return int64(f), err
+		}
+		return strconv.ParseInt(v, 10, 64)
+	default:
+		return 0, fmt.Errorf("unsupported int conversion from %T", val)
+	}
+}
+
+func CoerceInt32(val interface{}) (int32, error) {
+	n, err := CoerceInt64(val)
+	if err != nil {
+		return 0, err
+	}
+	if n > math.MaxInt32 || n < math.MinInt32 {
+		return 0, fmt.Errorf("%d exceeds int32 range", n)
+	}
+	return int32(n), nil
+}
+
+func CoerceUint64(val interface{}) (uint64, error) {
+	switch v := val.(type) {
+	case int:
+		if v < 0 {
+			return 0, fmt.Errorf("negative int cannot convert to uint")
+		}
+		return uint64(v), nil
+	case int8:
+		if v < 0 {
+			return 0, fmt.Errorf("negative int8 cannot convert to uint")
+		}
+		return uint64(v), nil
+	case int16:
+		if v < 0 {
+			return 0, fmt.Errorf("negative int16 cannot convert to uint")
+		}
+		return uint64(v), nil
+	case int32:
+		if v < 0 {
+			return 0, fmt.Errorf("negative int32 cannot convert to uint")
+		}
+		return uint64(v), nil
+	case int64:
+		if v < 0 {
+			return 0, fmt.Errorf("negative int64 cannot convert to uint")
+		}
+		return uint64(v), nil
+	case uint:
+		return uint64(v), nil
+	case uint8:
+		return uint64(v), nil
+	case uint16:
+		return uint64(v), nil
+	case uint32:
+		return uint64(v), nil
+	case uint64:
+		return v, nil
+	case float32:
+		if v < 0 {
+			return 0, fmt.Errorf("negative float32 cannot convert to uint")
+		}
+		return uint64(v), nil
+	case float64:
+		if v < 0 {
+			return 0, fmt.Errorf("negative float64 cannot convert to uint")
+		}
+		return uint64(v), nil
+	case string:
+		if strings.Contains(v, ".") {
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return 0, err
+			}
+			if f < 0 {
+				return 0, fmt.Errorf("negative float string cannot convert to uint")
+			}
+			return uint64(f), nil
+		}
+		return strconv.ParseUint(v, 10, 64)
+	default:
+		return 0, fmt.Errorf("unsupported uint conversion from %T", val)
+	}
+}
+
+func CoerceFloat64(val interface{}) (float64, error) {
+	switch v := val.(type) {
+	case int:
+		return float64(v), nil
+	case int8:
+		return float64(v), nil
+	case int16:
+		return float64(v), nil
+	case int32:
+		return float64(v), nil
+	case int64:
+		return float64(v), nil
+	case uint:
+		return float64(v), nil
+	case uint8:
+		return float64(v), nil
+	case uint16:
+		return float64(v), nil
+	case uint32:
+		return float64(v), nil
+	case uint64:
+		return float64(v), nil
+	case float32:
+		return float64(v), nil
+	case float64:
+		return v, nil
+	case string:
+		return strconv.ParseFloat(v, 64)
+	default:
+		return 0, fmt.Errorf("unsupported float conversion from %T", val)
+	}
+}
+
+func CoerceFloat32(val interface{}) (float32, error) {
+	f, err := CoerceFloat64(val)
+	if err != nil {
+		return 0, err
+	}
+	return float32(f), nil
+}
+
+func CoerceString(val interface{}) string {
+	if v, ok := val.(string); ok {
+		return v
+	}
+	return fmt.Sprint(val)
 }

@@ -1,4 +1,4 @@
-package opcua
+package conn
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"github.com/gopcua/opcua/ua"
 )
 
-type Config struct {
+type OpcuaConfig struct {
 	Endpoint       string
 	SecurityPolicy string
 	SecurityMode   string
@@ -19,35 +19,35 @@ type Config struct {
 	Password       string
 }
 
-type Manager struct {
+type OpcuaManager struct {
 	mu      sync.Mutex
-	clients map[string]*clientHolder
+	clients map[string]*opcuaClientHolder
 }
 
-type clientHolder struct {
-	cfg    Config
+type opcuaClientHolder struct {
+	cfg    OpcuaConfig
 	client *gopcua.Client
 }
 
-var defaultHolder struct {
+var opcuaDefaultHolder struct {
 	mu  sync.Mutex
-	mgr *Manager
+	mgr *OpcuaManager
 }
 
-func Default() *Manager {
-	defaultHolder.mu.Lock()
-	defer defaultHolder.mu.Unlock()
-	if defaultHolder.mgr == nil {
-		defaultHolder.mgr = NewManager()
+func DefaultOpcuaManager() *OpcuaManager {
+	opcuaDefaultHolder.mu.Lock()
+	defer opcuaDefaultHolder.mu.Unlock()
+	if opcuaDefaultHolder.mgr == nil {
+		opcuaDefaultHolder.mgr = NewOpcuaManager()
 	}
-	return defaultHolder.mgr
+	return opcuaDefaultHolder.mgr
 }
 
-func NewManager() *Manager {
-	return &Manager{clients: make(map[string]*clientHolder)}
+func NewOpcuaManager() *OpcuaManager {
+	return &OpcuaManager{clients: make(map[string]*opcuaClientHolder)}
 }
 
-func (m *Manager) Close() error {
+func (m *OpcuaManager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for key, holder := range m.clients {
@@ -59,7 +59,7 @@ func (m *Manager) Close() error {
 	return nil
 }
 
-func (m *Manager) ReadNodes(ctx context.Context, cfg Config, nodeIDs []string) ([]*ua.DataValue, error) {
+func (m *OpcuaManager) ReadNodes(ctx context.Context, cfg OpcuaConfig, nodeIDs []string) ([]*ua.DataValue, error) {
 	if len(nodeIDs) == 0 {
 		return nil, nil
 	}
@@ -87,7 +87,7 @@ func (m *Manager) ReadNodes(ctx context.Context, cfg Config, nodeIDs []string) (
 	return resp.Results, nil
 }
 
-func (m *Manager) WriteNode(ctx context.Context, cfg Config, nodeID string, value interface{}) error {
+func (m *OpcuaManager) WriteNode(ctx context.Context, cfg OpcuaConfig, nodeID string, value interface{}) error {
 	client, err := m.ensureClient(ctx, cfg)
 	if err != nil {
 		return err
@@ -127,11 +127,11 @@ func (m *Manager) WriteNode(ctx context.Context, cfg Config, nodeID string, valu
 	return nil
 }
 
-func (m *Manager) ensureClient(ctx context.Context, cfg Config) (*gopcua.Client, error) {
+func (m *OpcuaManager) ensureClient(ctx context.Context, cfg OpcuaConfig) (*gopcua.Client, error) {
 	if strings.TrimSpace(cfg.Endpoint) == "" {
 		return nil, fmt.Errorf("opcua: endpoint missing")
 	}
-	key := clientKey(cfg)
+	key := opcuaClientKey(cfg)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -146,7 +146,7 @@ func (m *Manager) ensureClient(ctx context.Context, cfg Config) (*gopcua.Client,
 		delete(m.clients, key)
 	}
 
-	opts, err := buildClientOptions(ctx, cfg)
+	opts, err := buildOpcuaClientOptions(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -155,11 +155,11 @@ func (m *Manager) ensureClient(ctx context.Context, cfg Config) (*gopcua.Client,
 		_ = client.CloseWithContext(context.Background())
 		return nil, err
 	}
-	m.clients[key] = &clientHolder{cfg: cfg, client: client}
+	m.clients[key] = &opcuaClientHolder{cfg: cfg, client: client}
 	return client, nil
 }
 
-func buildClientOptions(ctx context.Context, cfg Config) ([]gopcua.Option, error) {
+func buildOpcuaClientOptions(ctx context.Context, cfg OpcuaConfig) ([]gopcua.Option, error) {
 	policy := strings.TrimSpace(cfg.SecurityPolicy)
 	if policy == "" {
 		policy = "None"
@@ -192,7 +192,7 @@ func buildClientOptions(ctx context.Context, cfg Config) ([]gopcua.Option, error
 	}, nil
 }
 
-func clientKey(cfg Config) string {
+func opcuaClientKey(cfg OpcuaConfig) string {
 	parts := []string{
 		strings.TrimSpace(cfg.Endpoint),
 		strings.ToLower(strings.TrimSpace(cfg.SecurityPolicy)),

@@ -41,7 +41,9 @@ type Manager struct {
 
 	mu            sync.Mutex
 	modbusWorkers map[string]*deviceWorker
+	bacnetWorkers map[string]*bacnetWorker
 	opcuaWorkers  map[string]*opcuaWorker
+	mqttWorkers   map[string]*mqttWorker
 }
 
 func newManager(ctx context.Context) *Manager {
@@ -53,13 +55,17 @@ func newManager(ctx context.Context) *Manager {
 		ctx:           c,
 		cancel:        cancel,
 		modbusWorkers: make(map[string]*deviceWorker),
+		bacnetWorkers: make(map[string]*bacnetWorker),
 		opcuaWorkers:  make(map[string]*opcuaWorker),
+		mqttWorkers:   make(map[string]*mqttWorker),
 	}
 }
 
 func (m *Manager) update(cfg config.IotCfgType) {
 	modbusSpecs := buildModbusDeviceSpecs(cfg)
+	bacnetSpecs := buildBacnetDeviceSpecs(cfg)
 	opcuaSpecs := buildOpcuaDeviceSpecs(cfg)
+	mqttSpecs := buildMqttDeviceSpecs(cfg)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -72,10 +78,24 @@ func (m *Manager) update(cfg config.IotCfgType) {
 			removeDeviceSnapshot(serial)
 		}
 	}
+	for serial, worker := range m.bacnetWorkers {
+		if _, exists := bacnetSpecs[serial]; !exists {
+			worker.stop()
+			delete(m.bacnetWorkers, serial)
+			removeDeviceSnapshot(serial)
+		}
+	}
 	for serial, worker := range m.opcuaWorkers {
 		if _, exists := opcuaSpecs[serial]; !exists {
 			worker.stop()
 			delete(m.opcuaWorkers, serial)
+			removeDeviceSnapshot(serial)
+		}
+	}
+	for serial, worker := range m.mqttWorkers {
+		if _, exists := mqttSpecs[serial]; !exists {
+			worker.stop()
+			delete(m.mqttWorkers, serial)
 			removeDeviceSnapshot(serial)
 		}
 	}
@@ -92,6 +112,17 @@ func (m *Manager) update(cfg config.IotCfgType) {
 		m.modbusWorkers[serial] = worker
 		worker.start()
 	}
+	for serial, spec := range bacnetSpecs {
+		if worker, exists := m.bacnetWorkers[serial]; exists {
+			worker.stop()
+			delete(m.bacnetWorkers, serial)
+			logInfo("collector restarting BACnet worker", zap.String("deviceSerial", serial))
+		}
+
+		worker := newBacnetWorker(m.ctx, spec)
+		m.bacnetWorkers[serial] = worker
+		worker.start()
+	}
 	for serial, spec := range opcuaSpecs {
 		if worker, exists := m.opcuaWorkers[serial]; exists {
 			worker.stop()
@@ -101,6 +132,17 @@ func (m *Manager) update(cfg config.IotCfgType) {
 
 		worker := newOpcuaWorker(m.ctx, spec)
 		m.opcuaWorkers[serial] = worker
+		worker.start()
+	}
+	for serial, spec := range mqttSpecs {
+		if worker, exists := m.mqttWorkers[serial]; exists {
+			worker.stop()
+			delete(m.mqttWorkers, serial)
+			logInfo("collector restarting MQTT worker", zap.String("deviceSerial", serial))
+		}
+
+		worker := newMqttWorker(m.ctx, spec)
+		m.mqttWorkers[serial] = worker
 		worker.start()
 	}
 }
@@ -140,6 +182,10 @@ func buildModbusDeviceSpecs(cfg config.IotCfgType) map[string]deviceSpec {
 func isModbusDevice(protocol string) bool {
 	p := strings.ToLower(strings.TrimSpace(protocol))
 	return p == "modbusrtu" || p == "modbus" || p == "modbustcp"
+}
+
+func isBacnetDevice(protocol string) bool {
+	return strings.EqualFold(strings.TrimSpace(protocol), "bacnet")
 }
 
 func isOpcuaDevice(protocol string) bool {
@@ -215,7 +261,7 @@ func (w *deviceWorker) collectOnce() {
 	}
 
 	for _, param := range w.spec.Params {
-		if param.Passive {
+		if param.ReadDisabled {
 			continue
 		}
 		if !isReadFunctionCode(param.FunctionCode) {

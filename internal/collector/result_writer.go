@@ -102,6 +102,19 @@ func recordCollectedOpcuaValue(device config.DeviceRuntime, param config.OpcuaPa
 	}
 }
 
+func recordCollectedBacnetValue(device config.DeviceRuntime, param config.BacnetParam, value interface{}) {
+	writer := currentResultWriter()
+	if writer == nil {
+		return
+	}
+	if err := writer.recordBacnet(device, param, value); err != nil {
+		logger.Log.Warn("write realtime data failed",
+			zap.String("deviceSerial", device.Config.SerialNumber),
+			zap.String("param", param.Identify),
+			zap.Error(err))
+	}
+}
+
 func removeDeviceSnapshot(serial string) {
 	writer := currentResultWriter()
 	if writer == nil {
@@ -169,7 +182,13 @@ func (w *deviceResultWriter) applyConfig(cfg config.IotCfgType) error {
 		for _, p := range dev.ReadPoints {
 			pointNames[p.Identify] = p.Name
 		}
+		for _, p := range dev.BacnetReadPoints {
+			pointNames[p.Identify] = p.Name
+		}
 		for _, p := range dev.OpcuaReadPoints {
+			pointNames[p.Identify] = p.Name
+		}
+		for _, p := range dev.MqttReadPoints {
 			pointNames[p.Identify] = p.Name
 		}
 
@@ -218,6 +237,44 @@ func (w *deviceResultWriter) record(device config.DeviceRuntime, param config.Mo
 }
 
 func (w *deviceResultWriter) recordOpcua(device config.DeviceRuntime, param config.OpcuaParam, value interface{}) error {
+	if device.Config.SerialNumber == "" || param.Identify == "" {
+		return fmt.Errorf("device serial or parameter identify missing")
+	}
+
+	w.mu.Lock()
+	snapshot := w.ensureSnapshot(device)
+	snapshot.values[param.Identify] = value
+	result := snapshot.cloneResult()
+	w.mu.Unlock()
+
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	key := deviceDataKeyPrefix + device.Config.SerialNumber
+	return w.redis.Set(context.Background(), key, string(payload), 0)
+}
+
+func (w *deviceResultWriter) recordBacnet(device config.DeviceRuntime, param config.BacnetParam, value interface{}) error {
+	if device.Config.SerialNumber == "" || param.Identify == "" {
+		return fmt.Errorf("device serial or parameter identify missing")
+	}
+
+	w.mu.Lock()
+	snapshot := w.ensureSnapshot(device)
+	snapshot.values[param.Identify] = value
+	result := snapshot.cloneResult()
+	w.mu.Unlock()
+
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	key := deviceDataKeyPrefix + device.Config.SerialNumber
+	return w.redis.Set(context.Background(), key, string(payload), 0)
+}
+
+func (w *deviceResultWriter) recordMqtt(device config.DeviceRuntime, param config.MqttParam, value interface{}) error {
 	if device.Config.SerialNumber == "" || param.Identify == "" {
 		return fmt.Errorf("device serial or parameter identify missing")
 	}

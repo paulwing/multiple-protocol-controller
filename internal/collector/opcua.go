@@ -5,7 +5,8 @@ import (
 	"time"
 
 	"multiple-protocol-controller/internal/config"
-	opcuaClient "multiple-protocol-controller/internal/opcua"
+	"multiple-protocol-controller/internal/conn"
+	opcuaProtocol "multiple-protocol-controller/internal/protocol/opcua"
 
 	"github.com/gopcua/opcua/ua"
 	"go.uber.org/zap"
@@ -87,7 +88,7 @@ func (w *opcuaWorker) collectOnce() {
 	nodeIDs := make([]string, 0, len(w.spec.Params))
 	activeParams := make([]config.OpcuaParam, 0, len(w.spec.Params))
 	for _, param := range w.spec.Params {
-		if param.Passive {
+		if param.ReadDisabled {
 			continue
 		}
 		nodeIDs = append(nodeIDs, param.NodeID)
@@ -104,7 +105,7 @@ func (w *opcuaWorker) collectOnce() {
 	ctx, cancel := context.WithTimeout(w.ctx, timeout)
 	defer cancel()
 
-	cfg := opcuaClient.Config{
+	cfg := conn.OpcuaConfig{
 		Endpoint:       w.spec.Device.OpcuaEndpoint,
 		SecurityPolicy: w.spec.Device.OpcuaSecurityPolicy,
 		SecurityMode:   w.spec.Device.OpcuaSecurityMode,
@@ -117,7 +118,7 @@ func (w *opcuaWorker) collectOnce() {
 		return
 	}
 
-	results, err := opcuaClient.Default().ReadNodes(ctx, cfg, nodeIDs)
+	results, err := conn.DefaultOpcuaManager().ReadNodes(ctx, cfg, nodeIDs)
 	if err != nil {
 		logInfo("opcua read failed",
 			zap.String("deviceSerial", w.spec.Device.Config.SerialNumber),
@@ -142,7 +143,7 @@ func (w *opcuaWorker) collectOnce() {
 			continue
 		}
 		raw := val.Value.Value()
-		converted, err := opcuaClient.NormalizeValue(raw, param.DataType)
+		converted, err := opcuaProtocol.NormalizeValue(raw, param.DataType)
 		if err != nil {
 			logInfo("opcua value normalize failed",
 				zap.String("deviceSerial", w.spec.Device.Config.SerialNumber),

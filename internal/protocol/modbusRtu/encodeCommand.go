@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strconv"
 	"strings"
 
 	"multiple-protocol-controller/internal/protocol"
+	"multiple-protocol-controller/pkg/utils"
 )
 
 func (m *ModbusRtu) ParsePropProtocol(raw json.RawMessage) (any, error) {
@@ -74,7 +74,7 @@ func buildModbusFrame(msg *protocol.CommandMessage) ([]byte, error) {
 		copy(frame[4:], data)
 		return appendCRC(frame), nil
 	case ModbusRtuFunCode.WriteCoil:
-		boolVal, err := toBool(msg.Value)
+		boolVal, err := utils.CoerceBool(msg.Value)
 		if err != nil {
 			return nil, fmt.Errorf("modbusRtu: invalid coil value: %w", err)
 		}
@@ -135,9 +135,9 @@ func encodeRegisterValue(value interface{}, dataType string, endian string) ([]b
 
 	switch dt {
 	case "short", "int16":
-		n, err := toInt64(value)
+		n, err := utils.CoerceInt64(value)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("modbusRtu: %w", err)
 		}
 		if n < math.MinInt16 || n > math.MaxInt16 {
 			return nil, fmt.Errorf("modbusRtu: %d exceeds int16 range", n)
@@ -146,9 +146,9 @@ func encodeRegisterValue(value interface{}, dataType string, endian string) ([]b
 		binary.BigEndian.PutUint16(buf, uint16(int16(n)))
 		return applyEndian(buf, endian), nil
 	case "ushort", "uint16":
-		n, err := toUint64(value)
+		n, err := utils.CoerceUint64(value)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("modbusRtu: %w", err)
 		}
 		if n > math.MaxUint16 {
 			return nil, fmt.Errorf("modbusRtu: %d exceeds uint16 range", n)
@@ -157,9 +157,9 @@ func encodeRegisterValue(value interface{}, dataType string, endian string) ([]b
 		binary.BigEndian.PutUint16(buf, uint16(n))
 		return applyEndian(buf, endian), nil
 	case "int32":
-		n, err := toInt64(value)
+		n, err := utils.CoerceInt64(value)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("modbusRtu: %w", err)
 		}
 		if n < math.MinInt32 || n > math.MaxInt32 {
 			return nil, fmt.Errorf("modbusRtu: %d exceeds int32 range", n)
@@ -168,9 +168,9 @@ func encodeRegisterValue(value interface{}, dataType string, endian string) ([]b
 		binary.BigEndian.PutUint32(buf, uint32(int32(n)))
 		return applyEndian(buf, endian), nil
 	case "uint32":
-		n, err := toUint64(value)
+		n, err := utils.CoerceUint64(value)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("modbusRtu: %w", err)
 		}
 		if n > math.MaxUint32 {
 			return nil, fmt.Errorf("modbusRtu: %d exceeds uint32 range", n)
@@ -179,66 +179,39 @@ func encodeRegisterValue(value interface{}, dataType string, endian string) ([]b
 		binary.BigEndian.PutUint32(buf, uint32(n))
 		return applyEndian(buf, endian), nil
 	case "float":
-		f, err := toFloat64(value)
+		f, err := utils.CoerceFloat64(value)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("modbusRtu: %w", err)
 		}
 		buf := make([]byte, 4)
 		binary.BigEndian.PutUint32(buf, math.Float32bits(float32(f)))
 		return applyEndian(buf, endian), nil
 	case "double":
-		f, err := toFloat64(value)
+		f, err := utils.CoerceFloat64(value)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("modbusRtu: %w", err)
 		}
 		buf := make([]byte, 8)
 		binary.BigEndian.PutUint64(buf, math.Float64bits(f))
 		return applyEndian(buf, endian), nil
 	case "uint64":
-		n, err := toUint64(value)
+		n, err := utils.CoerceUint64(value)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("modbusRtu: %w", err)
 		}
 		buf := make([]byte, 8)
 		binary.BigEndian.PutUint64(buf, n)
 		return applyEndian(buf, endian), nil
 	case "int64":
-		n, err := toInt64(value)
+		n, err := utils.CoerceInt64(value)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("modbusRtu: %w", err)
 		}
 		buf := make([]byte, 8)
 		binary.BigEndian.PutUint64(buf, uint64(n))
 		return applyEndian(buf, endian), nil
 	default:
 		return nil, fmt.Errorf("modbusRtu: unsupported command data type %s", dataType)
-	}
-}
-
-func toBool(val interface{}) (bool, error) {
-	switch v := val.(type) {
-	case bool:
-		return v, nil
-	case int:
-		return v != 0, nil
-	case int64:
-		return v != 0, nil
-	case uint64:
-		return v != 0, nil
-	case float64:
-		return v != 0, nil
-	case string:
-		s := strings.TrimSpace(strings.ToLower(v))
-		switch s {
-		case "1", "true", "t", "yes", "y":
-			return true, nil
-		case "0", "false", "f", "no", "n":
-			return false, nil
-		default:
-			return false, fmt.Errorf("modbusRtu: invalid bool string %q", v)
-		}
-	default:
-		return false, fmt.Errorf("modbusRtu: unsupported bool type %T", val)
 	}
 }
 
@@ -249,9 +222,9 @@ func normalizeBoolSlice(val interface{}) ([]bool, error) {
 	case []interface{}:
 		bools := make([]bool, len(v))
 		for i, item := range v {
-			b, err := toBool(item)
+			b, err := utils.CoerceBool(item)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("modbusRtu: %w", err)
 			}
 			bools[i] = b
 		}
@@ -272,143 +245,6 @@ func packCoils(bools []bool) []byte {
 		}
 	}
 	return result
-}
-
-func toInt64(val interface{}) (int64, error) {
-	switch v := val.(type) {
-	case int:
-		return int64(v), nil
-	case int8:
-		return int64(v), nil
-	case int16:
-		return int64(v), nil
-	case int32:
-		return int64(v), nil
-	case int64:
-		return v, nil
-	case uint:
-		return int64(v), nil
-	case uint8:
-		return int64(v), nil
-	case uint16:
-		return int64(v), nil
-	case uint32:
-		return int64(v), nil
-	case uint64:
-		if v > math.MaxInt64 {
-			return 0, fmt.Errorf("modbusRtu: %d exceeds int64 range", v)
-		}
-		return int64(v), nil
-	case float32:
-		return int64(v), nil
-	case float64:
-		return int64(v), nil
-	case string:
-		if strings.Contains(v, ".") {
-			f, err := strconv.ParseFloat(v, 64)
-			return int64(f), err
-		}
-		return strconv.ParseInt(v, 10, 64)
-	default:
-		return 0, fmt.Errorf("modbusRtu: unsupported int conversion from %T", val)
-	}
-}
-
-func toUint64(val interface{}) (uint64, error) {
-	switch v := val.(type) {
-	case int:
-		if v < 0 {
-			return 0, fmt.Errorf("modbusRtu: negative int cannot convert to uint")
-		}
-		return uint64(v), nil
-	case int8:
-		if v < 0 {
-			return 0, fmt.Errorf("modbusRtu: negative int8 cannot convert to uint")
-		}
-		return uint64(v), nil
-	case int16:
-		if v < 0 {
-			return 0, fmt.Errorf("modbusRtu: negative int16 cannot convert to uint")
-		}
-		return uint64(v), nil
-	case int32:
-		if v < 0 {
-			return 0, fmt.Errorf("modbusRtu: negative int32 cannot convert to uint")
-		}
-		return uint64(v), nil
-	case int64:
-		if v < 0 {
-			return 0, fmt.Errorf("modbusRtu: negative int64 cannot convert to uint")
-		}
-		return uint64(v), nil
-	case uint:
-		return uint64(v), nil
-	case uint8:
-		return uint64(v), nil
-	case uint16:
-		return uint64(v), nil
-	case uint32:
-		return uint64(v), nil
-	case uint64:
-		return v, nil
-	case float32:
-		if v < 0 {
-			return 0, fmt.Errorf("modbusRtu: negative float32 cannot convert to uint")
-		}
-		return uint64(v), nil
-	case float64:
-		if v < 0 {
-			return 0, fmt.Errorf("modbusRtu: negative float64 cannot convert to uint")
-		}
-		return uint64(v), nil
-	case string:
-		if strings.Contains(v, ".") {
-			f, err := strconv.ParseFloat(v, 64)
-			if err != nil {
-				return 0, err
-			}
-			if f < 0 {
-				return 0, fmt.Errorf("modbusRtu: negative float string cannot convert to uint")
-			}
-			return uint64(f), nil
-		}
-		return strconv.ParseUint(v, 10, 64)
-	default:
-		return 0, fmt.Errorf("modbusRtu: unsupported uint conversion from %T", val)
-	}
-}
-
-func toFloat64(val interface{}) (float64, error) {
-	switch v := val.(type) {
-	case int:
-		return float64(v), nil
-	case int8:
-		return float64(v), nil
-	case int16:
-		return float64(v), nil
-	case int32:
-		return float64(v), nil
-	case int64:
-		return float64(v), nil
-	case uint:
-		return float64(v), nil
-	case uint8:
-		return float64(v), nil
-	case uint16:
-		return float64(v), nil
-	case uint32:
-		return float64(v), nil
-	case uint64:
-		return float64(v), nil
-	case float32:
-		return float64(v), nil
-	case float64:
-		return v, nil
-	case string:
-		return strconv.ParseFloat(v, 64)
-	default:
-		return 0, fmt.Errorf("modbusRtu: unsupported float conversion from %T", val)
-	}
 }
 
 // CRC helpers reused by both encoder and collector.
