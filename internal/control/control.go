@@ -386,12 +386,12 @@ func findBacnetCommand(cmds []config.BacnetCommand, identify string) (config.Bac
 	return config.BacnetCommand{}, false
 }
 
-func isOpcuaProtocol(protocol string) bool {
-	return strings.EqualFold(strings.TrimSpace(protocol), "opcua")
+func isOpcuaProtocol(proto string) bool {
+	return protocol.NormalizeName(proto) == "OPCUA"
 }
 
-func isBacnetProtocol(protocol string) bool {
-	return strings.EqualFold(strings.TrimSpace(protocol), "bacnet")
+func isBacnetProtocol(proto string) bool {
+	return protocol.NormalizeName(proto) == "BACNET"
 }
 
 type attrDispatchResult struct {
@@ -515,8 +515,8 @@ func collectAttrFailures(items []attrDispatchResult) string {
 	return strings.Join(failures, "; ")
 }
 
-func isMqttProtocol(protocol string) bool {
-	return strings.EqualFold(strings.TrimSpace(protocol), "mqtt")
+func isMqttProtocol(proto string) bool {
+	return protocol.NormalizeName(proto) == "MQTT"
 }
 
 func findMqttCommand(cmds []config.MqttCommand, identify string) (config.MqttCommand, bool) {

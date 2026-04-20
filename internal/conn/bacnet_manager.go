@@ -561,24 +561,24 @@ func parseSigned(data []byte, offset int, length int) (interface{}, int, error) 
 }
 
 func bacnetObjectTypeID(objectType string) (uint16, error) {
-	switch strings.TrimSpace(objectType) {
-	case "analogInput":
+	switch strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(objectType), "_", ""), "-", "")) {
+	case "analoginput":
 		return 0, nil
-	case "analogOutput":
+	case "analogoutput":
 		return 1, nil
-	case "analogValue":
+	case "analogvalue":
 		return 2, nil
-	case "binaryInput":
+	case "binaryinput":
 		return 3, nil
-	case "binaryOutput":
+	case "binaryoutput":
 		return 4, nil
-	case "binaryValue":
+	case "binaryvalue":
 		return 5, nil
-	case "multiStateInput":
+	case "multistateinput":
 		return 13, nil
-	case "multiStateOutput":
+	case "multistateoutput":
 		return 14, nil
-	case "multiStateValue":
+	case "multistatevalue":
 		return 19, nil
 	default:
 		return 0, fmt.Errorf("bacnet: unsupported object type %q", objectType)

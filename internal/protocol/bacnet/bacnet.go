@@ -33,7 +33,6 @@ type BacnetObject struct {
 func NewBacnet() *Bacnet { return &Bacnet{} }
 
 func init() {
-	protocol.RegisterProtocol("BACNET", NewBacnet())
 	protocol.RegisterProtocol("bacnet", NewBacnet())
 }
 
@@ -42,11 +41,13 @@ func (b *Bacnet) ParsePropProtocol(raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &base); err != nil {
 		return nil, err
 	}
-	if !strings.EqualFold(strings.TrimSpace(base.Type), "BACNET") {
+	switch strings.ToUpper(strings.TrimSpace(base.Type)) {
+	case "BACNET":
+		var cfg BacnetProtocol
+		return &cfg, json.Unmarshal(raw, &cfg)
+	default:
 		return nil, fmt.Errorf("protocol is not BACNET type %q", base.Type)
 	}
-	var cfg BacnetProtocol
-	return &cfg, json.Unmarshal(raw, &cfg)
 }
 
 func (b *Bacnet) EncodeCommand(cmd any) ([]byte, error) {

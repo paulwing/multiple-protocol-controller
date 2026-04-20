@@ -6,8 +6,9 @@ import (
 	"multiple-protocol-controller/pkg/logger"
 
 	// 引入协议包以注册协议实现
-	_ "multiple-protocol-controller/internal/protocol/mqtt"
+	_ "multiple-protocol-controller/internal/protocol/bacnet"
 	_ "multiple-protocol-controller/internal/protocol/modbusRtu"
+	_ "multiple-protocol-controller/internal/protocol/mqtt"
 	_ "multiple-protocol-controller/internal/protocol/opcua"
 
 	"go.uber.org/zap"

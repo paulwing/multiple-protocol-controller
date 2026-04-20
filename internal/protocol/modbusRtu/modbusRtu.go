@@ -1,6 +1,10 @@
 package modbusRtu
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
 	"multiple-protocol-controller/internal/protocol"
 )
 
@@ -49,7 +53,21 @@ var ModbusRtuFunCode = FunCodeType{
 
 func NewModbusRtu() *ModbusRtu { return &ModbusRtu{} }
 
+func (m *ModbusRtu) ParsePropProtocol(raw json.RawMessage) (any, error) {
+	var base ProtocolBase
+	if err := json.Unmarshal(raw, &base); err != nil {
+		return nil, err
+	}
+	switch strings.ToUpper(strings.TrimSpace(base.Type)) {
+	case "MODBUS_RTU":
+		var cfg ModbusProtocol
+		return &cfg, json.Unmarshal(raw, &cfg)
+	default:
+		return nil, fmt.Errorf("protocol is not MODBUS_RTU type %q", base.Type)
+	}
+}
+
 // init 自动注册到 protocol 工厂
 func init() {
-	protocol.RegisterProtocol("ModbusRtu", NewModbusRtu())
+	protocol.RegisterProtocol("MODBUS_RTU", NewModbusRtu())
 }

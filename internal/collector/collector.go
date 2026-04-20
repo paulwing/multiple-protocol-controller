@@ -10,6 +10,7 @@ import (
 
 	"multiple-protocol-controller/internal/config"
 	"multiple-protocol-controller/internal/conn"
+	"multiple-protocol-controller/internal/protocol"
 	"multiple-protocol-controller/pkg/logger"
 
 	"go.uber.org/zap"
@@ -179,17 +180,21 @@ func buildModbusDeviceSpecs(cfg config.IotCfgType) map[string]deviceSpec {
 	return specs
 }
 
-func isModbusDevice(protocol string) bool {
-	p := strings.ToLower(strings.TrimSpace(protocol))
-	return p == "modbusrtu" || p == "modbus" || p == "modbustcp"
+func isModbusDevice(proto string) bool {
+	switch protocol.NormalizeName(proto) {
+	case "MODBUSRTU", "MODBUS_RTU", "MODBUS", "MODBUSTCP", "MODBUS_TCP":
+		return true
+	default:
+		return false
+	}
 }
 
-func isBacnetDevice(protocol string) bool {
-	return strings.EqualFold(strings.TrimSpace(protocol), "bacnet")
+func isBacnetDevice(proto string) bool {
+	return protocol.NormalizeName(proto) == "BACNET"
 }
 
-func isOpcuaDevice(protocol string) bool {
-	return strings.EqualFold(strings.TrimSpace(protocol), "opcua")
+func isOpcuaDevice(proto string) bool {
+	return protocol.NormalizeName(proto) == "OPCUA"
 }
 
 type deviceWorker struct {

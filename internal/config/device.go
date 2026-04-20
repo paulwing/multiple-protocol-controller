@@ -40,7 +40,7 @@ type Property struct {
 // Protocol 解析信息说明：
 // 该字段结构由具体协议约定，如modbus协议，则该字段结构为：
 // "protocol": {
-// 	"type": "MODBUSRTU",
+// 	"type": "MODBUS_RTU",
 // 	"points": {
 // 		"read": [
 // 			{

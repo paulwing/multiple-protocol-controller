@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"multiple-protocol-controller/internal/config"
+	"multiple-protocol-controller/internal/protocol"
 	"multiple-protocol-controller/pkg/logger"
 
 	"go.uber.org/zap"
@@ -502,9 +503,9 @@ func collectDeviceMeta(cfg config.IotCfgType) (map[string]deviceMeta, map[string
 	return devices, gateways
 }
 
-func isTCPManagedProtocol(protocol string) bool {
-	switch strings.ToLower(strings.TrimSpace(protocol)) {
-	case "modbus", "modbusrtu", "modbustcp":
+func isTCPManagedProtocol(proto string) bool {
+	switch protocol.NormalizeName(proto) {
+	case "MODBUS", "MODBUSRTU", "MODBUS_RTU", "MODBUSTCP", "MODBUS_TCP":
 		return true
 	default:
 		return false

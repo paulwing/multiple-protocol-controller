@@ -2,7 +2,6 @@ package modbusRtu
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -11,20 +10,6 @@ import (
 	"multiple-protocol-controller/internal/protocol"
 	"multiple-protocol-controller/pkg/utils"
 )
-
-func (m *ModbusRtu) ParsePropProtocol(raw json.RawMessage) (any, error) {
-	var base ProtocolBase
-	if err := json.Unmarshal(raw, &base); err != nil {
-		return nil, err
-	}
-	switch strings.ToUpper(strings.TrimSpace(base.Type)) {
-	case "MODBUSRTU":
-		var cfg ModbusProtocol
-		return &cfg, json.Unmarshal(raw, &cfg)
-	default:
-		return nil, fmt.Errorf("protocol is not MODBUSRTU type %q", base.Type)
-	}
-}
 
 func (m *ModbusRtu) EncodeCommand(cmd any) ([]byte, error) {
 	payload, err := coerceCommandMessage(cmd)

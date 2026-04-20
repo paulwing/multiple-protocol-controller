@@ -573,7 +573,8 @@ func parseSlaveID(dev DeviceConfig) uint64 {
 	if len(strings.TrimSpace(dev.Protocol)) == 0 {
 		return 1
 	}
-	if strings.EqualFold(dev.Protocol, "modbusrtu") {
+	switch protocol.NormalizeName(dev.Protocol) {
+	case "MODBUSRTU", "MODBUS_RTU":
 		var temp struct {
 			SlaveID string `json:"slaveID"`
 		}
@@ -633,20 +634,24 @@ func buildOpcuaEndpoint(dev DeviceConfig) string {
 }
 
 func isModbusProtocol(proto string) bool {
-	p := strings.ToLower(strings.TrimSpace(proto))
-	return p == "modbusrtu" || p == "modbus" || p == "modbustcp"
+	switch protocol.NormalizeName(proto) {
+	case "MODBUSRTU", "MODBUS_RTU", "MODBUS", "MODBUSTCP", "MODBUS_TCP":
+		return true
+	default:
+		return false
+	}
 }
 
 func isBacnetProtocol(proto string) bool {
-	return strings.EqualFold(strings.TrimSpace(proto), "bacnet")
+	return protocol.NormalizeName(proto) == "BACNET"
 }
 
 func isOpcuaProtocol(proto string) bool {
-	return strings.EqualFold(strings.TrimSpace(proto), "opcua")
+	return protocol.NormalizeName(proto) == "OPCUA"
 }
 
 func isMqttProtocol(proto string) bool {
-	return strings.EqualFold(strings.TrimSpace(proto), "mqtt")
+	return protocol.NormalizeName(proto) == "MQTT"
 }
 
 // parseMqttPoints 解析 MQTT 采集点和控制点

@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 type Protocol interface {
@@ -26,13 +27,18 @@ var registry = map[string]Protocol{}
 
 // RegisterProtocol 注册协议实例（在 init 中调用）
 func RegisterProtocol(name string, p Protocol) {
-	registry[name] = p
+	registry[NormalizeName(name)] = p
 }
 
 // 工厂方法：根据协议名选择实现
 func GetProtocol(name string) (Protocol, error) {
-	if p, ok := registry[name]; ok {
+	if p, ok := registry[NormalizeName(name)]; ok {
 		return p, nil
 	}
 	return nil, fmt.Errorf("unsupported protocol: %s", name)
+}
+
+// NormalizeName returns the canonical key used by protocol registration and lookup.
+func NormalizeName(name string) string {
+	return strings.ToUpper(strings.TrimSpace(name))
 }

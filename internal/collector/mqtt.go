@@ -9,6 +9,7 @@ import (
 
 	"multiple-protocol-controller/internal/config"
 	"multiple-protocol-controller/internal/conn"
+	"multiple-protocol-controller/internal/protocol"
 
 	"go.uber.org/zap"
 )
@@ -40,8 +41,8 @@ func buildMqttDeviceSpecs(cfg config.IotCfgType) map[string]mqttSpec {
 	return specs
 }
 
-func isMqttDevice(protocol string) bool {
-	return strings.EqualFold(strings.TrimSpace(protocol), "mqtt")
+func isMqttDevice(proto string) bool {
+	return protocol.NormalizeName(proto) == "MQTT"
 }
 
 // mqttWorker MQTT 采集 worker

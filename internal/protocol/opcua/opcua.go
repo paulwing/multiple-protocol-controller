@@ -30,7 +30,6 @@ func NewOpcua() *Opcua { return &Opcua{} }
 
 func init() {
 	protocol.RegisterProtocol("OPCUA", NewOpcua())
-	protocol.RegisterProtocol("opcua", NewOpcua())
 }
 
 func (o *Opcua) ParsePropProtocol(raw json.RawMessage) (any, error) {
@@ -38,11 +37,13 @@ func (o *Opcua) ParsePropProtocol(raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &base); err != nil {
 		return nil, err
 	}
-	if !strings.EqualFold(strings.TrimSpace(base.Type), "OPCUA") {
+	switch strings.ToUpper(strings.TrimSpace(base.Type)) {
+	case "OPCUA":
+		var cfg OpcuaProtocol
+		return &cfg, json.Unmarshal(raw, &cfg)
+	default:
 		return nil, fmt.Errorf("protocol is not OPCUA type %q", base.Type)
 	}
-	var cfg OpcuaProtocol
-	return &cfg, json.Unmarshal(raw, &cfg)
 }
 
 func (o *Opcua) EncodeCommand(cmd any) ([]byte, error) {

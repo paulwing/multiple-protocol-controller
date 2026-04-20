@@ -16,8 +16,8 @@ type ProtocolBase struct {
 
 // MqttProtocol MQTT 协议配置结构
 type MqttProtocol struct {
-	Type   string       `json:"type"`
-	Topics MqttTopics  `json:"topics"`
+	Type   string     `json:"type"`
+	Topics MqttTopics `json:"topics"`
 }
 
 type MqttTopics struct {
@@ -35,7 +35,6 @@ func NewMqtt() *Mqtt { return &Mqtt{} }
 
 func init() {
 	protocol.RegisterProtocol("MQTT", NewMqtt())
-	protocol.RegisterProtocol("mqtt", NewMqtt())
 }
 
 func (m *Mqtt) ParsePropProtocol(raw json.RawMessage) (any, error) {
@@ -43,11 +42,13 @@ func (m *Mqtt) ParsePropProtocol(raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &base); err != nil {
 		return nil, err
 	}
-	if !strings.EqualFold(strings.TrimSpace(base.Type), "MQTT") {
+	switch strings.ToUpper(strings.TrimSpace(base.Type)) {
+	case "MQTT":
+		var cfg MqttProtocol
+		return &cfg, json.Unmarshal(raw, &cfg)
+	default:
 		return nil, fmt.Errorf("protocol is not MQTT type %q", base.Type)
 	}
-	var cfg MqttProtocol
-	return &cfg, json.Unmarshal(raw, &cfg)
 }
 
 func (m *Mqtt) EncodeCommand(cmd any) ([]byte, error) {
