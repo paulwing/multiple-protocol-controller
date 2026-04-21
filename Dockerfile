@@ -1,4 +1,4 @@
-FROM alpine:3.12.0
+FROM alpine:3.23.4
 
 # 安装必要的运行时工具
 RUN apk add --no-cache ca-certificates tzdata curl
