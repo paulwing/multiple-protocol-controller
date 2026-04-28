@@ -23,9 +23,9 @@ func Run(ctx context.Context) error {
 		return err
 	}
 
-	redisHostBase := os.Getenv("IOT_REDIS_HOST")
-	redisPortBase := os.Getenv("IOT_REDIS_PORT")
-	redisPasswordBase := os.Getenv("IOT_REDIS_PWD")
+	redisHostBase := os.Getenv("REDIS_HOST")
+	redisPortBase := os.Getenv("REDIS_PORT")
+	redisPasswordBase := os.Getenv("REDIS_PWD")
 	if redisHostBase != "" && redisPortBase != "" {
 		cfg.Redis.Address = redisHostBase + ":" + redisPortBase
 	}
