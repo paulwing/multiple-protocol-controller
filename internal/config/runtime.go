@@ -279,10 +279,7 @@ func buildDeviceRuntime(dev DeviceConfig) (DeviceRuntime, error) {
 		mqttClientID, mqttUsername, mqttPassword, mqttQos, mqttKeepAlive, mqttCleanSession = parseMqttParams(dev)
 	}
 
-	timeout := dev.AcqFreq
-	if timeout <= 0 {
-		timeout = 5000
-	}
+	timeout := parseDeviceResponseTimeout(dev)
 
 	// 对于 MQTT 协议，使用空字符串作为 GatewayIP/Port（不需要 TCP 连接）
 	resultIP := ip
@@ -575,55 +572,127 @@ func parseSlaveID(dev DeviceConfig) uint64 {
 	}
 	switch protocol.NormalizeName(dev.Protocol) {
 	case "MODBUSRTU", "MODBUS_RTU":
-		var temp struct {
-			SlaveID string `json:"slaveID"`
-		}
-		if err := json.Unmarshal(dev.Params, &temp); err == nil && strings.TrimSpace(temp.SlaveID) != "" {
-			if v, err := utils.ParseUintDecHex(temp.SlaveID); err == nil {
-				return v
-			}
+		if v, ok := deviceParamUint64(dev.Params, "slaveID", "SlaveID"); ok {
+			return v
 		}
 	}
 	return 1
 }
 
 func parseBacnetDeviceInstance(dev DeviceConfig) uint32 {
-	if len(dev.Params) == 0 {
-		return 0
+	if val, ok := deviceParamUint64(dev.Params, "deviceInstance"); ok {
+		return uint32(val)
 	}
-	var temp struct {
-		DeviceInstance interface{} `json:"deviceInstance"`
-	}
-	if err := json.Unmarshal(dev.Params, &temp); err != nil {
-		return 0
-	}
-	val, err := utils.CoerceUint64(temp.DeviceInstance)
-	if err != nil {
-		return 0
-	}
-	return uint32(val)
+	return 0
 }
 
-func parseOpcuaSecurity(raw json.RawMessage) (string, string) {
+func parseOpcuaSecurity(params []DeviceParam) (string, string) {
 	policy := "None"
 	mode := "None"
-	if len(raw) == 0 {
-		return policy, mode
+	if val, ok := deviceParamString(params, "securityPolicy"); ok && val != "" {
+		policy = val
 	}
-	var temp struct {
-		SecurityPolicy string `json:"securityPolicy"`
-		SecurityMode   string `json:"securityMode"`
-	}
-	if err := json.Unmarshal(raw, &temp); err != nil {
-		return policy, mode
-	}
-	if strings.TrimSpace(temp.SecurityPolicy) != "" {
-		policy = strings.TrimSpace(temp.SecurityPolicy)
-	}
-	if strings.TrimSpace(temp.SecurityMode) != "" {
-		mode = strings.TrimSpace(temp.SecurityMode)
+	if val, ok := deviceParamString(params, "securityMode"); ok && val != "" {
+		mode = val
 	}
 	return policy, mode
+}
+
+func parseDeviceResponseTimeout(dev DeviceConfig) int {
+	if timeout, ok := deviceParamInt(dev.Params, "timeout", "responseTimeout", "responseTimeoutMs"); ok && timeout > 0 {
+		return timeout
+	}
+	if dev.AcqFreq > 0 {
+		return dev.AcqFreq
+	}
+	return 5000
+}
+
+func deviceParamValue(params []DeviceParam, keys ...string) (json.RawMessage, bool) {
+	if len(params) == 0 {
+		return nil, false
+	}
+	values := make(map[string]json.RawMessage, len(params))
+	for _, param := range params {
+		key := normalizeDeviceParamKey(param.Key)
+		if key == "" || len(param.Value) == 0 {
+			continue
+		}
+		values[key] = param.Value
+	}
+	for _, key := range keys {
+		if val, ok := values[normalizeDeviceParamKey(key)]; ok {
+			return val, true
+		}
+	}
+	return nil, false
+}
+
+func normalizeDeviceParamKey(key string) string {
+	key = strings.TrimSpace(key)
+	key = strings.ReplaceAll(key, "_", "")
+	key = strings.ReplaceAll(key, "-", "")
+	return strings.ToLower(key)
+}
+
+func deviceParamString(params []DeviceParam, keys ...string) (string, bool) {
+	val, ok := deviceParamValue(params, keys...)
+	if !ok {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(val, &s); err == nil {
+		return strings.TrimSpace(s), true
+	}
+	var anyVal interface{}
+	if err := json.Unmarshal(val, &anyVal); err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(utils.CoerceString(anyVal)), true
+}
+
+func deviceParamUint64(params []DeviceParam, keys ...string) (uint64, bool) {
+	val, ok := deviceParamValue(params, keys...)
+	if !ok {
+		return 0, false
+	}
+	var s string
+	if err := json.Unmarshal(val, &s); err == nil {
+		parsed, err := utils.ParseUintDecHex(strings.TrimSpace(s))
+		return parsed, err == nil
+	}
+	var anyVal interface{}
+	if err := json.Unmarshal(val, &anyVal); err != nil {
+		return 0, false
+	}
+	parsed, err := utils.CoerceUint64(anyVal)
+	return parsed, err == nil
+}
+
+func deviceParamInt(params []DeviceParam, keys ...string) (int, bool) {
+	val, ok := deviceParamValue(params, keys...)
+	if !ok {
+		return 0, false
+	}
+	var anyVal interface{}
+	if err := json.Unmarshal(val, &anyVal); err != nil {
+		return 0, false
+	}
+	parsed, err := utils.CoerceInt64(anyVal)
+	return int(parsed), err == nil
+}
+
+func deviceParamBool(params []DeviceParam, keys ...string) (bool, bool) {
+	val, ok := deviceParamValue(params, keys...)
+	if !ok {
+		return false, false
+	}
+	var anyVal interface{}
+	if err := json.Unmarshal(val, &anyVal); err != nil {
+		return false, false
+	}
+	parsed, err := utils.CoerceBool(anyVal)
+	return parsed, err == nil
 }
 
 func buildOpcuaEndpoint(dev DeviceConfig) string {
@@ -801,36 +870,24 @@ func parseMqttParams(dev DeviceConfig) (clientID, username, password string, qos
 		return
 	}
 
-	var params struct {
-		ClientID     string `json:"clientId"`
-		Username     string `json:"username"`
-		Password     string `json:"password"`
-		Qos          int    `json:"qos"`
-		KeepAlive    int    `json:"keepAlive"`
-		CleanSession bool   `json:"cleanSession"`
+	if val, ok := deviceParamString(dev.Params, "clientId"); ok && val != "" {
+		clientID = val
 	}
-
-	if err := json.Unmarshal(dev.Params, &params); err != nil {
-		logger.Log.Warn("parse mqtt params failed", zap.String("serial", dev.SerialNumber), zap.Error(err))
-		return
+	if val, ok := deviceParamString(dev.Params, "username"); ok && val != "" {
+		username = val
 	}
-
-	if strings.TrimSpace(params.ClientID) != "" {
-		clientID = params.ClientID
+	if val, ok := deviceParamString(dev.Params, "password"); ok && val != "" {
+		password = val
 	}
-	if strings.TrimSpace(params.Username) != "" {
-		username = params.Username
+	if val, ok := deviceParamInt(dev.Params, "qos"); ok && val >= 0 && val <= 2 {
+		qos = byte(val)
 	}
-	if strings.TrimSpace(params.Password) != "" {
-		password = params.Password
+	if val, ok := deviceParamInt(dev.Params, "keepAlive"); ok && val > 0 {
+		keepAlive = val
 	}
-	if params.Qos >= 0 && params.Qos <= 2 {
-		qos = byte(params.Qos)
+	if val, ok := deviceParamBool(dev.Params, "cleanSession"); ok {
+		cleanSession = val
 	}
-	if params.KeepAlive > 0 {
-		keepAlive = params.KeepAlive
-	}
-	cleanSession = params.CleanSession
 
 	return
 }

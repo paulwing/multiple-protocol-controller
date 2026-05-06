@@ -11,20 +11,27 @@ type DeviceConfig struct {
 		Port       int    `json:"port"`
 		DeviceName string `json:"deviceName"`
 	} `json:"gatewayInfo"`
-	SerialNumber string          `json:"serialNumber"`
-	Disabled     bool            `json:"disabled"`
-	Description  string          `json:"description"`
-	Protocol     string          `json:"protocol"`
-	AcqFreq      int             `json:"acqFreq"`
-	DeviceName   string          `json:"deviceName"`
-	IsShown      bool            `json:"isShown"`
-	ProductId    string          `json:"productId"`
-	Location     []float64       `json:"location"` // 经、纬度
-	Position     string          `json:"position"` // 位置：xx大厦2楼东口
-	Username     string          `json:"username"`
-	Password     string          `json:"password"`
-	Properties   []Property      `json:"properties"` // 采集数据
-	Params       json.RawMessage `json:"params"`     // 协议规定的设备其它信息
+	SerialNumber string        `json:"serialNumber"`
+	Disabled     bool          `json:"disabled"`
+	Description  string        `json:"description"`
+	Protocol     string        `json:"protocol"`
+	AcqFreq      int           `json:"acqFreq"`
+	DeviceName   string        `json:"deviceName"`
+	DeviceKind   bool          `json:"deviceKind"`
+	ProductId    string        `json:"productId"`
+	Location     []float64     `json:"location"` // 经、纬度
+	Position     string        `json:"position"` // 位置：xx大厦2楼东口
+	Username     string        `json:"username"`
+	Password     string        `json:"password"`
+	Properties   []Property    `json:"properties"` // 采集数据
+	Params       []DeviceParam `json:"params"`     // 协议规定的设备其它信息
+}
+
+type DeviceParam struct {
+	Label string          `json:"label"`
+	Key   string          `json:"key"`
+	Type  string          `json:"type"`
+	Value json.RawMessage `json:"value"`
 }
 
 type Property struct {
@@ -72,7 +79,8 @@ type Property struct {
 // }
 
 // Params 解析信息说明：
-// 该字段结构由具体协议约定，如modbus协议需要从机ID，则该字段结构为：
-// "params": {
-// 	"slaveID": "1"
-// },
+// 该字段结构由设备特殊参数列表表示，运行时按 key 读取 value，如modbus协议需要从机ID，则该字段结构为：
+// "params": [
+// 	{"label": "从机ID", "key": "slaveID", "type": "string", "value": "1"},
+// 	{"label": "超时时间", "key": "timeout", "type": "int", "value": 3000}
+// ]
