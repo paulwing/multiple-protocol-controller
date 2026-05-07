@@ -24,6 +24,7 @@ type DeviceConfig struct {
 	Username     string        `json:"username"`
 	Password     string        `json:"password"`
 	Properties   []Property    `json:"properties"` // 采集数据
+	Tags         string        `json:"tags"`       // 设备标签，用于对设备进行人为划分、检索
 	Params       []DeviceParam `json:"params"`     // 协议规定的设备其它信息
 }
 
