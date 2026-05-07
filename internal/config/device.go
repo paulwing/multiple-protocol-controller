@@ -17,7 +17,7 @@ type DeviceConfig struct {
 	Protocol     string        `json:"protocol"`
 	AcqFreq      int           `json:"acqFreq"`
 	DeviceName   string        `json:"deviceName"`
-	DeviceKind   bool          `json:"deviceKind"`
+	DeviceKind   int           `json:"deviceKind"` // 0-实体设备；1-虚拟设备
 	ProductId    string        `json:"productId"`
 	Location     []float64     `json:"location"` // 经、纬度
 	Position     string        `json:"position"` // 位置：xx大厦2楼东口
