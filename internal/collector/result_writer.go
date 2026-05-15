@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -218,8 +219,8 @@ func (w *deviceResultWriter) applyConfig(cfg config.IotCfgType) error {
 }
 
 func (w *deviceResultWriter) record(device config.DeviceRuntime, param config.ModbusParam, value interface{}) error {
-	if device.Config.SerialNumber == "" || param.Identify == "" {
-		return fmt.Errorf("device serial or parameter identify missing")
+	if device.Config.SerialNumber == "" || device.Config.ID == "" || param.Identify == "" {
+		return fmt.Errorf("device serial, device id or parameter identify missing")
 	}
 
 	w.mu.Lock()
@@ -232,13 +233,16 @@ func (w *deviceResultWriter) record(device config.DeviceRuntime, param config.Mo
 	if err != nil {
 		return err
 	}
-	key := deviceDataKeyPrefix + device.Config.SerialNumber
+	key, err := deviceDataKey(device)
+	if err != nil {
+		return err
+	}
 	return w.redis.Set(context.Background(), key, string(payload), 0)
 }
 
 func (w *deviceResultWriter) recordOpcua(device config.DeviceRuntime, param config.OpcuaParam, value interface{}) error {
-	if device.Config.SerialNumber == "" || param.Identify == "" {
-		return fmt.Errorf("device serial or parameter identify missing")
+	if device.Config.SerialNumber == "" || device.Config.ID == "" || param.Identify == "" {
+		return fmt.Errorf("device serial, device id or parameter identify missing")
 	}
 
 	w.mu.Lock()
@@ -251,13 +255,16 @@ func (w *deviceResultWriter) recordOpcua(device config.DeviceRuntime, param conf
 	if err != nil {
 		return err
 	}
-	key := deviceDataKeyPrefix + device.Config.SerialNumber
+	key, err := deviceDataKey(device)
+	if err != nil {
+		return err
+	}
 	return w.redis.Set(context.Background(), key, string(payload), 0)
 }
 
 func (w *deviceResultWriter) recordBacnet(device config.DeviceRuntime, param config.BacnetParam, value interface{}) error {
-	if device.Config.SerialNumber == "" || param.Identify == "" {
-		return fmt.Errorf("device serial or parameter identify missing")
+	if device.Config.SerialNumber == "" || device.Config.ID == "" || param.Identify == "" {
+		return fmt.Errorf("device serial, device id or parameter identify missing")
 	}
 
 	w.mu.Lock()
@@ -270,13 +277,16 @@ func (w *deviceResultWriter) recordBacnet(device config.DeviceRuntime, param con
 	if err != nil {
 		return err
 	}
-	key := deviceDataKeyPrefix + device.Config.SerialNumber
+	key, err := deviceDataKey(device)
+	if err != nil {
+		return err
+	}
 	return w.redis.Set(context.Background(), key, string(payload), 0)
 }
 
 func (w *deviceResultWriter) recordMqtt(device config.DeviceRuntime, param config.MqttParam, value interface{}) error {
-	if device.Config.SerialNumber == "" || param.Identify == "" {
-		return fmt.Errorf("device serial or parameter identify missing")
+	if device.Config.SerialNumber == "" || device.Config.ID == "" || param.Identify == "" {
+		return fmt.Errorf("device serial, device id or parameter identify missing")
 	}
 
 	w.mu.Lock()
@@ -289,8 +299,19 @@ func (w *deviceResultWriter) recordMqtt(device config.DeviceRuntime, param confi
 	if err != nil {
 		return err
 	}
-	key := deviceDataKeyPrefix + device.Config.SerialNumber
+	key, err := deviceDataKey(device)
+	if err != nil {
+		return err
+	}
 	return w.redis.Set(context.Background(), key, string(payload), 0)
+}
+
+func deviceDataKey(device config.DeviceRuntime) (string, error) {
+	id := strings.TrimSpace(device.Config.ID)
+	if id == "" {
+		return "", fmt.Errorf("device id missing")
+	}
+	return deviceDataKeyPrefix + id, nil
 }
 
 func (w *deviceResultWriter) ensureSnapshot(device config.DeviceRuntime) *deviceSnapshot {

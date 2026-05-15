@@ -89,3 +89,12 @@ type Property struct {
 // 	{"label": "从机ID", "key": "slaveID", "type": "string", "value": "1"},
 // 	{"label": "超时时间", "key": "timeout", "type": "int", "value": 3000}
 // ]
+// 如opcua网关可能需要设置path路径，则该字段为：
+// "params": [
+//   {
+// 	"label": "服务路径",
+// 	"key": "endpointPath",
+// 	"type": "string",
+// 	"value": "/UA/MyLittleServer"
+//   }
+// ]
