@@ -42,6 +42,7 @@ type Property struct {
 	Name     string          `json:"name"`
 	Access   string          `json:"access"` // 11-读写；10-读；01-写
 	Unit     string          `json:"unit"`
+	Scale    *float64        `json:"scale,omitempty"`
 	Protocol json.RawMessage `json:"protocol"`
 	Item     []struct {
 		Label string          `json:"label"`
