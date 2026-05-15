@@ -43,6 +43,10 @@ type Property struct {
 	Access   string          `json:"access"` // 11-读写；10-读；01-写
 	Unit     string          `json:"unit"`
 	Protocol json.RawMessage `json:"protocol"`
+	Item     []struct {
+		Label string          `json:"label"`
+		Value json.RawMessage `json:"value"`
+	} `json:"item"` // 如果Type是enum,则Item存各项值的相关信息
 }
 
 // Protocol 解析信息说明：
