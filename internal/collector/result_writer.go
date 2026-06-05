@@ -43,6 +43,7 @@ func InitResultWriter(ctx context.Context, cfg *config.Config) error {
 
 	resultWriter = &deviceResultWriter{
 		redis:     client,
+		history:   newHistoryWriter(cfg.Influx),
 		snapshots: make(map[string]*deviceSnapshot),
 	}
 
@@ -132,6 +133,7 @@ func currentResultWriter() *deviceResultWriter {
 
 type deviceResultWriter struct {
 	redis     *store.RedisClient
+	history   *historyWriter
 	mu        sync.Mutex
 	snapshots map[string]*deviceSnapshot
 }
@@ -237,7 +239,11 @@ func (w *deviceResultWriter) record(device config.DeviceRuntime, param config.Mo
 	if err != nil {
 		return err
 	}
-	return w.redis.Set(context.Background(), key, string(payload), 0)
+	if err := w.redis.Set(context.Background(), key, string(payload), 0); err != nil {
+		return err
+	}
+	w.history.writeAsync(historyPointFromModbus(device, param, value))
+	return nil
 }
 
 func (w *deviceResultWriter) recordOpcua(device config.DeviceRuntime, param config.OpcuaParam, value interface{}) error {
@@ -259,7 +265,11 @@ func (w *deviceResultWriter) recordOpcua(device config.DeviceRuntime, param conf
 	if err != nil {
 		return err
 	}
-	return w.redis.Set(context.Background(), key, string(payload), 0)
+	if err := w.redis.Set(context.Background(), key, string(payload), 0); err != nil {
+		return err
+	}
+	w.history.writeAsync(historyPointFromOpcua(device, param, value))
+	return nil
 }
 
 func (w *deviceResultWriter) recordBacnet(device config.DeviceRuntime, param config.BacnetParam, value interface{}) error {
@@ -281,7 +291,11 @@ func (w *deviceResultWriter) recordBacnet(device config.DeviceRuntime, param con
 	if err != nil {
 		return err
 	}
-	return w.redis.Set(context.Background(), key, string(payload), 0)
+	if err := w.redis.Set(context.Background(), key, string(payload), 0); err != nil {
+		return err
+	}
+	w.history.writeAsync(historyPointFromBacnet(device, param, value))
+	return nil
 }
 
 func (w *deviceResultWriter) recordMqtt(device config.DeviceRuntime, param config.MqttParam, value interface{}) error {
@@ -303,7 +317,11 @@ func (w *deviceResultWriter) recordMqtt(device config.DeviceRuntime, param confi
 	if err != nil {
 		return err
 	}
-	return w.redis.Set(context.Background(), key, string(payload), 0)
+	if err := w.redis.Set(context.Background(), key, string(payload), 0); err != nil {
+		return err
+	}
+	w.history.writeAsync(historyPointFromMqtt(device, param, value))
+	return nil
 }
 
 func deviceDataKey(device config.DeviceRuntime) (string, error) {

@@ -10,6 +10,7 @@ import (
 	"multiple-protocol-controller/pkg/logger"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"go.uber.org/zap"
@@ -31,6 +32,26 @@ func Run(ctx context.Context) error {
 	}
 	if redisPasswordBase != "" {
 		cfg.Redis.Pwd = redisPasswordBase
+	}
+	if value := os.Getenv("INFLUXDB_ENABLED"); value != "" {
+		cfg.Influx.Enabled = value == "true" || value == "1"
+	}
+	if value := os.Getenv("INFLUXDB_URL"); value != "" {
+		cfg.Influx.URL = value
+	}
+	if value := os.Getenv("INFLUXDB_TOKEN"); value != "" {
+		cfg.Influx.Token = value
+	}
+	if value := os.Getenv("INFLUXDB_ORG"); value != "" {
+		cfg.Influx.Org = value
+	}
+	if value := os.Getenv("INFLUXDB_BUCKET"); value != "" {
+		cfg.Influx.Bucket = value
+	}
+	if value := os.Getenv("INFLUXDB_TIMEOUT_SECONDS"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.Influx.TimeoutSeconds = parsed
+		}
 	}
 	// if err := control.Init(ctx, cfg); err != nil {
 	// 	return fmt.Errorf("control init failed: %w", err)

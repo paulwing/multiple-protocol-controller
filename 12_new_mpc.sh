@@ -28,6 +28,12 @@ docker run -d --name $CONTAINER_NAME --restart=always \
 	-e "DEC_PASSWORD=${IOT_DEC_PASSWORD}" \
 	-e "XLSSO_ENABLE=${IOT_XLSSO_ENABLE}" \
 	-e "IOT_APP_HOST=${IOT_APP_HOST}" \
+	-e "INFLUXDB_ENABLED=${IOT_INFLUXDB_ENABLED:-true}" \
+	-e "INFLUXDB_URL=${IOT_INFLUXDB_URL:-http://iot-influxdb:8086}" \
+	-e "INFLUXDB_TOKEN=${IOT_INFLUXDB_TOKEN:-iot-influxdb-local-token}" \
+	-e "INFLUXDB_ORG=${IOT_INFLUXDB_ORG:-iot}" \
+	-e "INFLUXDB_BUCKET=${IOT_INFLUXDB_BUCKET:-device_history}" \
+	-e "INFLUXDB_TIMEOUT_SECONDS=${IOT_INFLUXDB_TIMEOUT_SECONDS:-3}" \
 	-v /etc/localtime:/etc/localtime:ro  \
 	-v ~/dockervol/etc:/data/xlapps \
 	-v ~/dockervol/static:/static/upload \

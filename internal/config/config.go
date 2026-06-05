@@ -8,8 +8,9 @@ import (
 )
 
 type Config struct {
-	RunMode string   `mapstructure:"runmode"`
-	Redis   RedisCfg `mapstructure:"redis"`
+	RunMode string    `mapstructure:"runmode"`
+	Redis   RedisCfg  `mapstructure:"redis"`
+	Influx  InfluxCfg `mapstructure:"influx"`
 }
 
 type Command4MPC struct {
@@ -21,6 +22,15 @@ type RedisCfg struct {
 	Address string `mapstructure:"address"`
 	Timeout string `mapstructure:"timeout"`
 	Pwd     string `mapstructure:"pwd"`
+}
+
+type InfluxCfg struct {
+	Enabled        bool   `mapstructure:"enabled"`
+	URL            string `mapstructure:"url"`
+	Token          string `mapstructure:"token"`
+	Org            string `mapstructure:"org"`
+	Bucket         string `mapstructure:"bucket"`
+	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
 }
 
 type RedisWrapper struct {

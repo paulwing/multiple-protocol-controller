@@ -49,3 +49,44 @@ Current runtime keys:
 | `cleanSession` | MQTT clean session flag | MQTT connection |
 
 Property-level protocol configuration is not read from `params`. It is read from each property's `protocol` field, such as Modbus function code and address, OPC UA `nodeId`, MQTT topic/path, and BACnet object configuration.
+
+### History Data
+
+MPC can write collected property values to InfluxDB for historical queries.
+
+Configuration:
+
+```toml
+[influx]
+enabled = false
+url = "http://127.0.0.1:8086"
+token = ""
+org = "iot"
+bucket = "device_history"
+timeout_seconds = 3
+```
+
+Environment overrides:
+
+```sh
+INFLUXDB_ENABLED=true
+INFLUXDB_URL=http://iot-influxdb:8086
+INFLUXDB_TOKEN=iot-influxdb-local-token
+INFLUXDB_ORG=iot
+INFLUXDB_BUCKET=device_history
+INFLUXDB_TIMEOUT_SECONDS=3
+```
+
+When enabled, each successful realtime Redis write also writes one `device_history` point to InfluxDB. If InfluxDB is disabled or incomplete, MPC only writes Redis realtime data and skips history writes.
+
+InfluxDB tags:
+
+```text
+device_id, property_key, serial_number, property_id, property_name, protocol, unit, data_type
+```
+
+InfluxDB fields:
+
+```text
+value_number, value_bool, value_string
+```

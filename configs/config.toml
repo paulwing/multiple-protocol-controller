@@ -6,3 +6,11 @@ runmode = 'dev'
 address = "192.168.2.25:6379"
 timeout = 500
 pwd = "QAZxswZXC"
+
+[influx]
+enabled = false
+url = "http://127.0.0.1:8086"
+token = ""
+org = "iot"
+bucket = "device_history"
+timeout_seconds = 3
