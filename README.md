@@ -21,6 +21,9 @@ ARCH_NAME=linux-amd64 IMAGE_PLATFORM=linux/amd64 ./scripts/package-image.sh
 
 # arm64
 ARCH_NAME=linux-arm64 IMAGE_PLATFORM=linux/arm64 ./scripts/package-image.sh
+
+# arm64 on amd64 Jenkins with buildx
+ARCH_NAME=linux-arm64 IMAGE_PLATFORM=linux/arm64 USE_BUILDX=true ./scripts/package-image.sh
 ```
 
 Output examples:
@@ -35,6 +38,8 @@ Generated app image packages are uploaded to:
 ```text
 NewFramework/apps/${ARCH_NAME}/
 ```
+
+The script loads `alpine:3.23.4` from `NewFramework/base-images/${ARCH_NAME}/` when the local base image architecture does not match `ARCH_NAME`.
 
 ### Device Params
 
