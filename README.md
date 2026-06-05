@@ -11,6 +11,31 @@ go build -o ./multiple-protocol-controller ./cmd
 ./multiple-protocol-controller
 ```
 
+### Jenkins Image Package
+
+`scripts/package-image.sh` is the Jenkins image packaging script template. It supports amd64 and arm64 by environment variables.
+
+```sh
+# amd64
+ARCH_NAME=linux-amd64 IMAGE_PLATFORM=linux/amd64 ./scripts/package-image.sh
+
+# arm64
+ARCH_NAME=linux-arm64 IMAGE_PLATFORM=linux/arm64 ./scripts/package-image.sh
+```
+
+Output examples:
+
+```text
+new_mpc-basic_sys-linux-amd64.tar
+new_mpc-basic_sys-linux-arm64.tar
+```
+
+Generated app image packages are uploaded to:
+
+```text
+NewFramework/apps/${ARCH_NAME}/
+```
+
 ### Device Params
 
 `DeviceConfig.params` stores device-level special parameters as a list. Each item is matched by `key`, and `value` is converted according to the runtime use case.
