@@ -11,20 +11,38 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
 )
 
-const deviceHistoryMeasurement = "device_history"
+const (
+	deviceHistoryMeasurement = "device_history"
+	defaultHistoryBatchSize  = 100
+	defaultHistoryFlushMS    = 500
+	defaultHistoryQueueSize  = 10000
+	defaultHistoryRetryCount = 3
+	defaultHistoryRetryMS    = 200
+)
 
 type historyWriter struct {
-	enabled bool
-	url     string
-	token   string
-	org     string
-	bucket  string
-	client  *http.Client
+	enabled       bool
+	url           string
+	token         string
+	org           string
+	bucket        string
+	client        *http.Client
+	ctx           context.Context
+	cancel        context.CancelFunc
+	queue         chan historyPoint
+	wg            sync.WaitGroup
+	batchSize     int
+	flushInterval time.Duration
+	retryCount    int
+	retryInterval time.Duration
+	dropped       uint64
 }
 
 type historyPoint struct {
@@ -40,7 +58,7 @@ type historyPoint struct {
 	Timestamp    time.Time
 }
 
-func newHistoryWriter(cfg config.InfluxCfg) *historyWriter {
+func newHistoryWriter(ctx context.Context, cfg config.InfluxCfg) *historyWriter {
 	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 3 * time.Second
@@ -51,35 +69,147 @@ func newHistoryWriter(cfg config.InfluxCfg) *historyWriter {
 		strings.TrimSpace(cfg.Org) != "" &&
 		strings.TrimSpace(cfg.Bucket) != ""
 
-	return &historyWriter{
-		enabled: enabled,
-		url:     strings.TrimRight(strings.TrimSpace(cfg.URL), "/"),
-		token:   strings.TrimSpace(cfg.Token),
-		org:     strings.TrimSpace(cfg.Org),
-		bucket:  strings.TrimSpace(cfg.Bucket),
-		client:  &http.Client{Timeout: timeout},
+	if ctx == nil {
+		ctx = context.Background()
 	}
+	writerCtx, cancel := context.WithCancel(ctx)
+
+	w := &historyWriter{
+		enabled:       enabled,
+		url:           strings.TrimRight(strings.TrimSpace(cfg.URL), "/"),
+		token:         strings.TrimSpace(cfg.Token),
+		org:           strings.TrimSpace(cfg.Org),
+		bucket:        strings.TrimSpace(cfg.Bucket),
+		client:        &http.Client{Timeout: timeout},
+		ctx:           writerCtx,
+		cancel:        cancel,
+		batchSize:     positiveOrDefault(cfg.BatchSize, defaultHistoryBatchSize),
+		flushInterval: time.Duration(positiveOrDefault(cfg.FlushIntervalMS, defaultHistoryFlushMS)) * time.Millisecond,
+		retryCount:    positiveOrDefault(cfg.RetryCount, defaultHistoryRetryCount),
+		retryInterval: time.Duration(positiveOrDefault(cfg.RetryIntervalMS, defaultHistoryRetryMS)) * time.Millisecond,
+	}
+	if enabled {
+		w.queue = make(chan historyPoint, positiveOrDefault(cfg.QueueSize, defaultHistoryQueueSize))
+		w.wg.Add(1)
+		go w.run()
+	}
+	return w
 }
 
 func (w *historyWriter) writeAsync(point historyPoint) {
 	if w == nil || !w.enabled {
 		return
 	}
-	go func() {
-		if err := w.write(context.Background(), point); err != nil {
-			logger.Log.Warn("write device history failed",
+	select {
+	case <-w.ctx.Done():
+		return
+	case w.queue <- point:
+	default:
+		dropped := atomic.AddUint64(&w.dropped, 1)
+		if dropped == 1 || dropped%1000 == 0 {
+			logger.Log.Warn("drop device history because queue is full",
+				zap.Uint64("dropped", dropped),
 				zap.String("deviceID", point.DeviceID),
-				zap.String("propertyKey", point.PropertyKey),
-				zap.Error(err))
+				zap.String("propertyKey", point.PropertyKey))
 		}
-	}()
+	}
 }
 
 func (w *historyWriter) write(ctx context.Context, point historyPoint) error {
-	line, err := buildHistoryLineProtocol(point)
-	if err != nil {
-		return err
+	return w.writeBatch(ctx, []historyPoint{point})
+}
+
+func (w *historyWriter) stop() {
+	if w == nil || !w.enabled {
+		return
 	}
+	w.cancel()
+	w.wg.Wait()
+}
+
+func (w *historyWriter) run() {
+	defer w.wg.Done()
+
+	ticker := time.NewTicker(w.flushInterval)
+	defer ticker.Stop()
+
+	batch := make([]historyPoint, 0, w.batchSize)
+	flush := func(ctx context.Context) {
+		if len(batch) == 0 {
+			return
+		}
+		w.writeBatchWithRetry(ctx, batch)
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case point := <-w.queue:
+			batch = append(batch, point)
+			if len(batch) >= w.batchSize {
+				flush(context.Background())
+			}
+		case <-ticker.C:
+			flush(context.Background())
+		case <-w.ctx.Done():
+			for {
+				select {
+				case point := <-w.queue:
+					batch = append(batch, point)
+				default:
+					flush(context.Background())
+					return
+				}
+			}
+		}
+	}
+}
+
+func (w *historyWriter) writeBatchWithRetry(ctx context.Context, batch []historyPoint) {
+	attempts := w.retryCount + 1
+	if attempts <= 0 {
+		attempts = 1
+	}
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		err = w.writeBatch(ctx, batch)
+		if err == nil {
+			return
+		}
+		if attempt >= attempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			logger.Log.Warn("write device history canceled",
+				zap.Int("batchSize", len(batch)),
+				zap.Error(err))
+			return
+		case <-time.After(w.retryInterval):
+		}
+	}
+
+	logger.Log.Warn("write device history batch failed",
+		zap.Int("batchSize", len(batch)),
+		zap.Int("attempts", attempts),
+		zap.Error(err))
+}
+
+func (w *historyWriter) writeBatch(ctx context.Context, batch []historyPoint) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
+	lines := make([]string, 0, len(batch))
+	for _, point := range batch {
+		line, err := buildHistoryLineProtocol(point)
+		if err != nil {
+			return err
+		}
+		lines = append(lines, line)
+	}
+
+	body := strings.Join(lines, "\n")
 
 	endpoint, err := url.Parse(w.url + "/api/v2/write")
 	if err != nil {
@@ -88,10 +218,10 @@ func (w *historyWriter) write(ctx context.Context, point historyPoint) error {
 	query := endpoint.Query()
 	query.Set("org", w.org)
 	query.Set("bucket", w.bucket)
-	query.Set("precision", "ms")
+	query.Set("precision", "ns")
 	endpoint.RawQuery = query.Encode()
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewBufferString(line))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewBufferString(body))
 	if err != nil {
 		return fmt.Errorf("create influx write request: %w", err)
 	}
@@ -108,6 +238,13 @@ func (w *historyWriter) write(ctx context.Context, point historyPoint) error {
 		return fmt.Errorf("write influx history status: %d", response.StatusCode)
 	}
 	return nil
+}
+
+func positiveOrDefault(value int, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return fallback
 }
 
 func buildHistoryLineProtocol(point historyPoint) (string, error) {
@@ -151,7 +288,7 @@ func buildHistoryLineProtocol(point historyPoint) (string, error) {
 		deviceHistoryMeasurement,
 		strings.Join(tags, ","),
 		field,
-		point.Timestamp.UnixMilli(),
+		point.Timestamp.UnixNano(),
 	), nil
 }
 

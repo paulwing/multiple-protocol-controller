@@ -53,6 +53,31 @@ func Run(ctx context.Context) error {
 			cfg.Influx.TimeoutSeconds = parsed
 		}
 	}
+	if value := os.Getenv("INFLUXDB_BATCH_SIZE"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.Influx.BatchSize = parsed
+		}
+	}
+	if value := os.Getenv("INFLUXDB_FLUSH_INTERVAL_MS"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.Influx.FlushIntervalMS = parsed
+		}
+	}
+	if value := os.Getenv("INFLUXDB_QUEUE_SIZE"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.Influx.QueueSize = parsed
+		}
+	}
+	if value := os.Getenv("INFLUXDB_RETRY_COUNT"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.Influx.RetryCount = parsed
+		}
+	}
+	if value := os.Getenv("INFLUXDB_RETRY_INTERVAL_MS"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.Influx.RetryIntervalMS = parsed
+		}
+	}
 	// if err := control.Init(ctx, cfg); err != nil {
 	// 	return fmt.Errorf("control init failed: %w", err)
 	// }

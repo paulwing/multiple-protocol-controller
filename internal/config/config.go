@@ -25,12 +25,17 @@ type RedisCfg struct {
 }
 
 type InfluxCfg struct {
-	Enabled        bool   `mapstructure:"enabled"`
-	URL            string `mapstructure:"url"`
-	Token          string `mapstructure:"token"`
-	Org            string `mapstructure:"org"`
-	Bucket         string `mapstructure:"bucket"`
-	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
+	Enabled         bool   `mapstructure:"enabled"`
+	URL             string `mapstructure:"url"`
+	Token           string `mapstructure:"token"`
+	Org             string `mapstructure:"org"`
+	Bucket          string `mapstructure:"bucket"`
+	TimeoutSeconds  int    `mapstructure:"timeout_seconds"`
+	BatchSize       int    `mapstructure:"batch_size"`
+	FlushIntervalMS int    `mapstructure:"flush_interval_ms"`
+	QueueSize       int    `mapstructure:"queue_size"`
+	RetryCount      int    `mapstructure:"retry_count"`
+	RetryIntervalMS int    `mapstructure:"retry_interval_ms"`
 }
 
 type RedisWrapper struct {

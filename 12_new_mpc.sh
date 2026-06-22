@@ -37,6 +37,11 @@ docker run -d --name $CONTAINER_NAME --restart=always \
 	-e "INFLUXDB_ORG=${IOT_INFLUXDB_ORG:-iot}" \
 	-e "INFLUXDB_BUCKET=${IOT_INFLUXDB_BUCKET:-device_history}" \
 	-e "INFLUXDB_TIMEOUT_SECONDS=${IOT_INFLUXDB_TIMEOUT_SECONDS:-3}" \
+	-e "INFLUXDB_BATCH_SIZE=${IOT_INFLUXDB_BATCH_SIZE:-100}" \
+	-e "INFLUXDB_FLUSH_INTERVAL_MS=${IOT_INFLUXDB_FLUSH_INTERVAL_MS:-500}" \
+	-e "INFLUXDB_QUEUE_SIZE=${IOT_INFLUXDB_QUEUE_SIZE:-10000}" \
+	-e "INFLUXDB_RETRY_COUNT=${IOT_INFLUXDB_RETRY_COUNT:-3}" \
+	-e "INFLUXDB_RETRY_INTERVAL_MS=${IOT_INFLUXDB_RETRY_INTERVAL_MS:-200}" \
 	-v /etc/localtime:/etc/localtime:ro  \
 	-v ~/dockervol/etc:/data/xlapps \
 	-v ~/dockervol/static:/static/upload \

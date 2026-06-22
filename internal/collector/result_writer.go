@@ -43,15 +43,22 @@ func InitResultWriter(ctx context.Context, cfg *config.Config) error {
 
 	resultWriter = &deviceResultWriter{
 		redis:     client,
-		history:   newHistoryWriter(cfg.Influx),
+		history:   newHistoryWriter(ctx, cfg.Influx),
 		snapshots: make(map[string]*deviceSnapshot),
 	}
 
 	go func() {
 		<-ctx.Done()
+		resultWriterMu.RLock()
+		writer := resultWriter
+		resultWriterMu.RUnlock()
+		if writer != nil && writer.history != nil {
+			writer.history.stop()
+		}
+		_ = client.Close()
+
 		resultWriterMu.Lock()
 		defer resultWriterMu.Unlock()
-		_ = client.Close()
 		resultWriter = nil
 	}()
 

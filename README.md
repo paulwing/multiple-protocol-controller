@@ -94,6 +94,11 @@ token = ""
 org = "iot"
 bucket = "device_history"
 timeout_seconds = 3
+batch_size = 100
+flush_interval_ms = 500
+queue_size = 10000
+retry_count = 3
+retry_interval_ms = 200
 ```
 
 Environment overrides:
@@ -105,9 +110,22 @@ INFLUXDB_TOKEN=iot-influxdb-local-token
 INFLUXDB_ORG=iot
 INFLUXDB_BUCKET=device_history
 INFLUXDB_TIMEOUT_SECONDS=3
+INFLUXDB_BATCH_SIZE=100
+INFLUXDB_FLUSH_INTERVAL_MS=500
+INFLUXDB_QUEUE_SIZE=10000
+INFLUXDB_RETRY_COUNT=3
+INFLUXDB_RETRY_INTERVAL_MS=200
 ```
 
-When enabled, each successful realtime Redis write also writes one `device_history` point to InfluxDB. If InfluxDB is disabled or incomplete, MPC only writes Redis realtime data and skips history writes.
+When enabled, each successful realtime Redis write enqueues one `device_history` point. A fixed background worker writes queued points to InfluxDB in batches. If InfluxDB is disabled or incomplete, MPC only writes Redis realtime data and skips history writes.
+
+Batching behavior:
+
+```text
+collected value -> Redis realtime snapshot -> history queue -> batched InfluxDB write
+```
+
+The writer flushes when the batch reaches `batch_size` or `flush_interval_ms` elapses. Failed batches are retried up to `retry_count` times with `retry_interval_ms` between attempts. If `queue_size` is full, MPC drops new history points and logs the dropped count; realtime Redis writes are not blocked.
 
 InfluxDB tags:
 
