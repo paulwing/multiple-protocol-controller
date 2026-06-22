@@ -40,7 +40,8 @@ BASE_IMAGE_FTP_URL="${BASE_IMAGE_FTP_URL:-${FTP_ROOT_URL}/base-images/${ARCH_NAM
 APP_FTP_URL="${APP_FTP_URL:-${FTP_ROOT_URL}/apps/${ARCH_NAME}}"
 FTP_USER="${FTP_USER:-data:data}"
 USE_BUILDX="${USE_BUILDX:-false}"
-BASE_IMAGE_NAME="alpine:3.23.4"
+BASE_IMAGE_SOURCE="alpine:3.23.4"
+BASE_IMAGE_NAME="alpine:3.23.4-${ARCH_NAME}"
 BASE_IMAGE_TAR="alpine-3.23.4-${ARCH_NAME}.tar"
 
 echo $GOPROXY
@@ -60,15 +61,32 @@ load_base_image() {
   echo "downloading base image from FTP: $BASE_IMAGE_TAR"
   rm -f "$BASE_IMAGE_TAR"
   curl -f -u "$FTP_USER" -O "${BASE_IMAGE_FTP_URL}/${BASE_IMAGE_TAR}"
+
+  # Avoid reusing a stale multi-arch base tag from a previous Jenkins build.
+  docker image rm -f "$BASE_IMAGE_SOURCE" >/dev/null 2>&1 || true
   docker load -i "$BASE_IMAGE_TAR"
   rm -f "$BASE_IMAGE_TAR"
+
+  loaded_arch="$(docker image inspect --format '{{.Architecture}}' "$BASE_IMAGE_NAME" 2>/dev/null || true)"
+  if [ "$loaded_arch" != "$IMAGE_ARCH" ]; then
+    source_arch="$(docker image inspect --format '{{.Architecture}}' "$BASE_IMAGE_SOURCE" 2>/dev/null || true)"
+    if [ "$source_arch" = "$IMAGE_ARCH" ]; then
+      docker tag "$BASE_IMAGE_SOURCE" "$BASE_IMAGE_NAME"
+      loaded_arch="$source_arch"
+    fi
+  fi
+
+  if [ "$loaded_arch" != "$IMAGE_ARCH" ]; then
+    echo "base image arch mismatch: image=$BASE_IMAGE_NAME expected=$IMAGE_ARCH actual=$loaded_arch" >&2
+    exit 1
+  fi
 }
 
 build_image() {
   if [ "$USE_BUILDX" = "true" ]; then
-    docker buildx build --no-cache --pull=false --platform "$IMAGE_PLATFORM" --load -t "$CIMAGE_NAME_TAG" -f ./Dockerfile .
+    docker buildx build --no-cache --pull=false --platform "$IMAGE_PLATFORM" --load --build-arg BASE_IMAGE="$BASE_IMAGE_NAME" -t "$CIMAGE_NAME_TAG" -f ./Dockerfile .
   else
-    docker build --no-cache --pull=false --platform "$IMAGE_PLATFORM" -t "$CIMAGE_NAME_TAG" -f ./Dockerfile .
+    docker build --no-cache --pull=false --platform "$IMAGE_PLATFORM" --build-arg BASE_IMAGE="$BASE_IMAGE_NAME" -t "$CIMAGE_NAME_TAG" -f ./Dockerfile .
   fi
 }
 

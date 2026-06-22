@@ -1,4 +1,5 @@
-FROM alpine:3.23.4
+ARG BASE_IMAGE=alpine:3.23.4
+FROM ${BASE_IMAGE}
 
 # 安装必要的运行时工具
 RUN apk add --no-cache ca-certificates tzdata curl
