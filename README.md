@@ -39,7 +39,7 @@ Generated app image packages are uploaded to:
 NewFramework/apps/${ARCH_NAME}/
 ```
 
-The script loads `alpine:3.23.4` from `NewFramework/base-images/${ARCH_NAME}/` when the local base image architecture does not match `ARCH_NAME`.
+The script loads `alpine:3.23.4-${ARCH_NAME}` from `NewFramework/base-images/${ARCH_NAME}/` and verifies the loaded base image architecture before building.
 
 ### Device Params
 

@@ -4,6 +4,18 @@ CIMAGE_DIST_TAG="${PROJECT_NAME}_sys"
 CONTAINER_NAME="new_mpc"
 CIMAGE_NAME_TAG="$CIMAGE_NAME:$CIMAGE_DIST_TAG"
 ARCH_NAME="${ARCH_NAME:-linux-amd64}"
+case "${ARCH_NAME}" in
+  linux-amd64)
+    IMAGE_ARCH="amd64"
+    ;;
+  linux-arm64)
+    IMAGE_ARCH="arm64"
+    ;;
+  *)
+    echo "unsupported ARCH_NAME=${ARCH_NAME}" >&2
+    exit 1
+    ;;
+esac
 DOCKER_FILENAME="${DOCKER_FILENAME:-${CIMAGE_NAME}-${CIMAGE_DIST_TAG}-${ARCH_NAME}.tar}"
 FTP_ROOT_PATH="${FTP_ROOT_PATH:-NewFramework}"
 APP_FTP_PATH="${APP_FTP_PATH:-${FTP_ROOT_PATH}/apps/${ARCH_NAME}}"
@@ -16,6 +28,11 @@ fi
 docker rm -f $CONTAINER_NAME
 docker rmi $CIMAGE_NAME_TAG
 docker load < $DOCKER_FILENAME
+LOADED_ARCH="$(docker image inspect --format '{{.Architecture}}' "$CIMAGE_NAME_TAG" 2>/dev/null || true)"
+if [ "$LOADED_ARCH" != "$IMAGE_ARCH" ]; then
+	echo "image arch mismatch: image=$CIMAGE_NAME_TAG expected=$IMAGE_ARCH actual=$LOADED_ARCH" >&2
+	exit 1
+fi
 echo "start run " ${CONTAINER_NAME}
 docker run -d --name $CONTAINER_NAME --restart=always \
 	--network iot_net --network-alias ${CONTAINER_NAME} \
