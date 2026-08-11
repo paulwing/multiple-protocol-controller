@@ -60,8 +60,5 @@ docker run -d --name $CONTAINER_NAME --restart=always \
 	-e "INFLUXDB_RETRY_COUNT=${IOT_INFLUXDB_RETRY_COUNT:-3}" \
 	-e "INFLUXDB_RETRY_INTERVAL_MS=${IOT_INFLUXDB_RETRY_INTERVAL_MS:-200}" \
 	-v /etc/localtime:/etc/localtime:ro  \
-	-v ~/dockervol/etc:/data/xlapps \
-	-v ~/dockervol/static:/static/upload \
-	-v ~/dockervol/upload:/upload \
 	-p 19901:19901  \
 	$CIMAGE_NAME_TAG

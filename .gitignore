@@ -5,3 +5,28 @@ main
 multiple-protocol-controller
 .gocache/
 .claude
+
+# Local development and agent metadata
+/.gitnexus/
+/.superpowers/
+/docs/superpowers/
+
+# Build and packaging artifacts
+/bin/
+/version.txt
+/new_mpc-*.tar
+/alpine-*.tar
+/build-errors.log
+
+# Go test and profiling artifacts
+/coverage/
+coverage.out
+*.coverprofile
+*.prof
+*.test
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp

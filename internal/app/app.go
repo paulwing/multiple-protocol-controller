@@ -78,6 +78,7 @@ func Run(ctx context.Context) error {
 			cfg.Influx.RetryIntervalMS = parsed
 		}
 	}
+	applyJudgeSourceEnvOverrides(cfg)
 	// if err := control.Init(ctx, cfg); err != nil {
 	// 	return fmt.Errorf("control init failed: %w", err)
 	// }
@@ -152,4 +153,38 @@ func Run(ctx context.Context) error {
 
 	// 优雅退出逻辑
 	return err
+}
+
+func applyJudgeSourceEnvOverrides(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	if value := os.Getenv("JUDGE_SOURCE_ENABLED"); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			cfg.JudgeSource.Enabled = parsed
+		}
+	}
+	if value := os.Getenv("JUDGE_SOURCE_STREAM"); value != "" {
+		cfg.JudgeSource.Stream = value
+	}
+	if value := os.Getenv("JUDGE_SOURCE_WRITE_TIMEOUT_MS"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.JudgeSource.WriteTimeoutMS = parsed
+		}
+	}
+	if value := os.Getenv("JUDGE_SOURCE_RETRY_COUNT"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.JudgeSource.RetryCount = parsed
+		}
+	}
+	if value := os.Getenv("JUDGE_SOURCE_RETRY_INTERVAL_MS"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.JudgeSource.RetryIntervalMS = parsed
+		}
+	}
+	if value := os.Getenv("JUDGE_SOURCE_MAX_EVENT_BYTES"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.JudgeSource.MaxEventBytes = parsed
+		}
+	}
 }

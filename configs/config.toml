@@ -7,6 +7,14 @@ address = "192.168.2.25:6379"
 timeout = 500
 pwd = "QAZxswZXC"
 
+[judge_source]
+enabled = false
+stream = "judge:source"
+write_timeout_ms = 200
+retry_count = 1
+retry_interval_ms = 20
+max_event_bytes = 65536
+
 [influx]
 enabled = false
 url = "http://127.0.0.1:8086"

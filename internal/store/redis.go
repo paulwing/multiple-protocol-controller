@@ -14,6 +14,12 @@ type RedisClient struct {
 	rdb *redis.Client
 }
 
+type SnapshotStreamWriteResult struct {
+	StreamID    string
+	SnapshotErr error
+	StreamErr   error
+}
+
 // 初始化 Redis 客户端
 func NewRedisClient(ctx context.Context, addr, password string, db int) (*RedisClient, error) {
 	rdb := redis.NewClient(&redis.Options{
@@ -51,6 +57,51 @@ func (c *RedisClient) Set(ctx context.Context, key string, value interface{}, ex
 		ctx = context.Background()
 	}
 	return c.rdb.Set(ctx, key, value, expiration).Err()
+}
+
+func (c *RedisClient) SetAndXAdd(
+	ctx context.Context,
+	snapshotKey string,
+	snapshotValue any,
+	streamKey string,
+	streamValues map[string]any,
+) SnapshotStreamWriteResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	pipe := c.rdb.Pipeline()
+
+	setCmd := pipe.Set(ctx, snapshotKey, snapshotValue, 0)
+	addCmd := pipe.XAdd(ctx, &redis.XAddArgs{
+		Stream: streamKey,
+		ID:     "*",
+		Values: streamValues,
+	})
+	_, execErr := pipe.Exec(ctx)
+
+	result := SnapshotStreamWriteResult{
+		SnapshotErr: setCmd.Err(),
+		StreamErr:   addCmd.Err(),
+	}
+	if result.SnapshotErr == nil && result.StreamErr == nil && execErr != nil {
+		result.SnapshotErr = execErr
+		result.StreamErr = execErr
+	}
+	if result.StreamErr == nil {
+		result.StreamID = addCmd.Val()
+	}
+	return result
+}
+
+func (c *RedisClient) XAdd(ctx context.Context, streamKey string, streamValues map[string]any) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return c.rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: streamKey,
+		ID:     "*",
+		Values: streamValues,
+	}).Result()
 }
 
 // Delete removes the specified key using the provided context (or background if nil).

@@ -138,3 +138,41 @@ InfluxDB fields:
 ```text
 value_number, value_bool, value_string
 ```
+
+### Judge Rule Events
+
+MPC can publish collected property changes to the Judge Redis Stream. The feature is disabled by default and must be enabled only after the matching Judge five-field version is deployed and integration-tested.
+
+```toml
+[judge_source]
+enabled = false
+stream = "judge:source"
+write_timeout_ms = 200
+retry_count = 1
+retry_interval_ms = 20
+max_event_bytes = 65536
+```
+
+Environment overrides:
+
+```text
+JUDGE_SOURCE_ENABLED
+JUDGE_SOURCE_STREAM
+JUDGE_SOURCE_WRITE_TIMEOUT_MS
+JUDGE_SOURCE_RETRY_COUNT
+JUDGE_SOURCE_RETRY_INTERVAL_MS
+JUDGE_SOURCE_MAX_EVENT_BYTES
+```
+
+`retry_count` is the number of additional `XADD` attempts after the initial Pipeline attempt. Runtime normalization limits the write timeout to 2 seconds, retries to 3, retry interval to 1 second, and event size to 64 KiB.
+
+When enabled, MPC reuses the realtime writer's existing Redis client. The normal path pipelines the existing realtime `SET` and Judge `XADD` in one Redis round trip, but Pipeline is not transactional and both command results are checked separately. Every logical event receives one canonical lowercase UUIDv4 and all finite retries reuse the exact five-field payload. MPC does not create a second Judge Redis client, read `judge:ingress`, or trim `judge:source`.
+
+There is no local persistent queue or in-memory recovery queue. A failed Source write receives only the configured finite synchronous retries. If all attempts fail, MPC logs a stable `reason_code`, drops that rule event, and continues collecting. A successful realtime `SET` still permits the existing history write even when Source delivery fails.
+
+Activation order:
+
+1. Deploy this MPC version with `judge_source.enabled = false`.
+2. Deploy Judge with the strict five-field UUIDv4 contract.
+3. Complete integration and failure tests.
+4. Set `JUDGE_SOURCE_ENABLED=true` and restart MPC. Each subsequent logical event receives its own UUIDv4.
