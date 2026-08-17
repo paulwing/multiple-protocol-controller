@@ -38,7 +38,7 @@ func InitResultWriter(ctx context.Context, cfg *config.Config) error {
 		return nil
 	}
 
-	client, err := store.NewRedisClient(ctx, cfg.Redis.Address, cfg.Redis.Pwd, 0)
+	client, err := store.NewRedisClient(ctx, cfg.Redis.Address, cfg.Redis.Pwd, cfg.Redis.DB)
 	if err != nil {
 		return fmt.Errorf("init collector redis client failed: %w", err)
 	}

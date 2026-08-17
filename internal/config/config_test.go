@@ -13,6 +13,7 @@ runmode = "test"
 
 [redis]
 address = "127.0.0.1:6379"
+db = 4
 
 [judge_source]
 enabled = true
@@ -29,6 +30,9 @@ max_event_bytes = 65536
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Redis.DB != 4 {
+		t.Fatalf("Redis.DB = %d, want 4", cfg.Redis.DB)
 	}
 	if !cfg.JudgeSource.Enabled {
 		t.Fatal("JudgeSource.Enabled = false, want true")

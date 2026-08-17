@@ -20,7 +20,7 @@ import (
 func GetIoTCfg(ctx context.Context, iotCfgStore *atomic.Value, cfg *config.Config) error {
 	rootCtx := ctx
 
-	redisClient, err := store.NewRedisClient(rootCtx, cfg.Redis.Address, cfg.Redis.Pwd, 0)
+	redisClient, err := store.NewRedisClient(rootCtx, cfg.Redis.Address, cfg.Redis.Pwd, cfg.Redis.DB)
 	if err != nil {
 		return fmt.Errorf("getdataclient init failed: %w", err)
 	}

@@ -141,7 +141,9 @@ value_number, value_bool, value_string
 
 ### Judge Rule Events
 
-MPC can publish collected property changes to the Judge Redis Stream. The feature is disabled by default and must be enabled only after the matching Judge five-field version is deployed and integration-tested.
+MPC publishes collected property changes to the Judge Redis Stream. Local configuration remains disabled by default, while `12_new_mpc.sh` enables the already-integrated five-field publisher in production unless `IOT_JUDGE_SOURCE_ENABLED=false` is set explicitly.
+
+MPC and Judge must use the same Redis address and logical database. MPC reads the database from `redis.db` or the `REDIS_DB` environment variable; the production script passes `${IOT_REDIS_DB:-0}` to match the Judge deployment.
 
 ```toml
 [judge_source]
@@ -162,6 +164,7 @@ JUDGE_SOURCE_WRITE_TIMEOUT_MS
 JUDGE_SOURCE_RETRY_COUNT
 JUDGE_SOURCE_RETRY_INTERVAL_MS
 JUDGE_SOURCE_MAX_EVENT_BYTES
+REDIS_DB
 ```
 
 `retry_count` is the number of additional `XADD` attempts after the initial Pipeline attempt. Runtime normalization limits the write timeout to 2 seconds, retries to 3, retry interval to 1 second, and event size to 64 KiB.
@@ -170,9 +173,9 @@ When enabled, MPC reuses the realtime writer's existing Redis client. The normal
 
 There is no local persistent queue or in-memory recovery queue. A failed Source write receives only the configured finite synchronous retries. If all attempts fail, MPC logs a stable `reason_code`, drops that rule event, and continues collecting. A successful realtime `SET` still permits the existing history write even when Source delivery fails.
 
-Activation order:
+Production activation:
 
-1. Deploy this MPC version with `judge_source.enabled = false`.
-2. Deploy Judge with the strict five-field UUIDv4 contract.
-3. Complete integration and failure tests.
-4. Set `JUDGE_SOURCE_ENABLED=true` and restart MPC. Each subsequent logical event receives its own UUIDv4.
+1. Deploy Judge with the strict five-field UUIDv4 contract.
+2. Ensure MPC and Judge receive the same `IOT_REDIS_DB` value.
+3. Deploy MPC with `12_new_mpc.sh`; Judge Source is enabled by default.
+4. Set `IOT_JUDGE_SOURCE_ENABLED=false` only when an explicit rollback requires MPC to stop producing new Source events.

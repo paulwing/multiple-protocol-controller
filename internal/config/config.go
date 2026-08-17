@@ -23,6 +23,7 @@ type RedisCfg struct {
 	Address string `mapstructure:"address"`
 	Timeout string `mapstructure:"timeout"`
 	Pwd     string `mapstructure:"pwd"`
+	DB      int    `mapstructure:"db"`
 }
 
 type JudgeSourceCfg struct {

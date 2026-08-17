@@ -24,15 +24,7 @@ func Run(ctx context.Context) error {
 		return err
 	}
 
-	redisHostBase := os.Getenv("REDIS_HOST")
-	redisPortBase := os.Getenv("REDIS_PORT")
-	redisPasswordBase := os.Getenv("REDIS_PWD")
-	if redisHostBase != "" && redisPortBase != "" {
-		cfg.Redis.Address = redisHostBase + ":" + redisPortBase
-	}
-	if redisPasswordBase != "" {
-		cfg.Redis.Pwd = redisPasswordBase
-	}
+	applyRedisEnvOverrides(cfg)
 	if value := os.Getenv("INFLUXDB_ENABLED"); value != "" {
 		cfg.Influx.Enabled = value == "true" || value == "1"
 	}
@@ -123,7 +115,7 @@ func Run(ctx context.Context) error {
 	})
 	// 3. 订阅频道
 	g.Go(func() error {
-		redisClient, err := store.NewRedisClient(ctx, cfg.Redis.Address, cfg.Redis.Pwd, 0)
+		redisClient, err := store.NewRedisClient(ctx, cfg.Redis.Address, cfg.Redis.Pwd, cfg.Redis.DB)
 		if err != nil {
 			return fmt.Errorf("subclient init failed: %w", err)
 		}
@@ -132,7 +124,7 @@ func Run(ctx context.Context) error {
 	})
 	// 4.发送服务心跳
 	g.Go(func() error {
-		redisClient, err := store.NewRedisClient(ctx, cfg.Redis.Address, cfg.Redis.Pwd, 0)
+		redisClient, err := store.NewRedisClient(ctx, cfg.Redis.Address, cfg.Redis.Pwd, cfg.Redis.DB)
 		if err != nil {
 			return fmt.Errorf("dataclient init failed: %w", err)
 		}
@@ -153,6 +145,25 @@ func Run(ctx context.Context) error {
 
 	// 优雅退出逻辑
 	return err
+}
+
+func applyRedisEnvOverrides(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	host := os.Getenv("REDIS_HOST")
+	port := os.Getenv("REDIS_PORT")
+	if host != "" && port != "" {
+		cfg.Redis.Address = host + ":" + port
+	}
+	if password := os.Getenv("REDIS_PWD"); password != "" {
+		cfg.Redis.Pwd = password
+	}
+	if value := os.Getenv("REDIS_DB"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 0 {
+			cfg.Redis.DB = parsed
+		}
+	}
 }
 
 func applyJudgeSourceEnvOverrides(cfg *config.Config) {

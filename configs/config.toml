@@ -6,6 +6,7 @@ runmode = 'dev'
 address = "192.168.2.25:6379"
 timeout = 500
 pwd = "QAZxswZXC"
+db = 0
 
 [judge_source]
 enabled = false

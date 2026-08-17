@@ -283,46 +283,45 @@ func ProcessCommand(redisClient *store.RedisClient, cmd config.Command4MPC) erro
 				timeout = 5000
 			}
 			timeoutDur := timeout * time.Millisecond
-			ctx, cancel := context.WithTimeout(context.Background(), timeoutDur)
-			var (
-				netConn net.Conn
-				release func()
-			)
-			for {
-				netConn, release, err = manager.ExclusiveConnection(ctx, serial)
-				if err == nil {
+			withCommandTimeout(timeoutDur, func(ctx context.Context) {
+				var (
+					netConn net.Conn
+					release func()
+				)
+				for {
+					netConn, release, err = manager.ExclusiveConnection(ctx, serial)
+					if err == nil {
+						break
+					}
+					if errors.Is(err, conn.ErrGatewayBusy) {
+						select {
+						case <-ctx.Done():
+							break
+						case <-time.After(100 * time.Millisecond):
+						}
+						if ctx.Err() == nil {
+							continue
+						}
+					}
+					logger.Log.Warn("acquire connection failed", zap.String("serial", serial), zap.Error(err))
+					netConn = nil
 					break
 				}
-				if errors.Is(err, conn.ErrGatewayBusy) {
-					select {
-					case <-ctx.Done():
-						break
-					case <-time.After(100 * time.Millisecond):
-					}
-					if ctx.Err() == nil {
-						continue
-					}
+				if netConn == nil {
+					errMsg = "acquire connection failed: " + err.Error()
+					return
 				}
-				logger.Log.Warn("acquire connection failed", zap.String("serial", serial), zap.Error(err))
-				cancel()
-				netConn = nil
-				break
-			}
-			if netConn == nil {
-				errMsg = "acquire connection failed: " + err.Error()
-				continue
-			}
+				defer release()
 
-			if _, err := netConn.Write(frame); err != nil {
-				logger.Log.Warn("send command failed", zap.String("serial", serial), zap.String("identify", key), zap.Error(err))
-				errMsg = err.Error()
-			} else {
+				if _, err := netConn.Write(frame); err != nil {
+					logger.Log.Warn("send command failed", zap.String("serial", serial), zap.String("identify", key), zap.Error(err))
+					errMsg = err.Error()
+					return
+				}
 				_ = collector.WaitCommandAck(ctx, netConn, device, commandMeta)
 				success = true
 				errMsg = ""
-			}
-			release()
-			cancel()
+			})
 		}
 		dispatchResults = append(dispatchResults, attrDispatchResult{
 			DeviceSerial: serial,
@@ -342,6 +341,12 @@ func ProcessCommand(redisClient *store.RedisClient, cmd config.Command4MPC) erro
 	publishCommandResults(redisClient, cfg, cmd.Uid, dispatchResults)
 
 	return nil
+}
+
+func withCommandTimeout(timeout time.Duration, callback func(context.Context)) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	callback(ctx)
 }
 
 // PublishCommandResult publishes the control result (succ/fail) to redis if SendCmdResCh is configured.

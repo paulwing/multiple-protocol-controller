@@ -2,7 +2,7 @@
 
 ## 1. 启用状态
 
-MPC 已具备向 `judge:source` 发布规则事件的能力，但默认关闭：
+MPC 已具备向 `judge:source` 发布规则事件的能力。本地配置默认关闭，生产脚本 `12_new_mpc.sh` 在未显式设置 `IOT_JUDGE_SOURCE_ENABLED=false` 时默认启用：
 
 ```toml
 [judge_source]
@@ -14,16 +14,18 @@ retry_interval_ms = 20
 max_event_bytes = 65536
 ```
 
-启用步骤：
+生产启用步骤：
 
 1. 部署支持本文严格五字段协议的 Judge。
-2. 部署新版 MPC，保持 Source 关闭，确认原采集、实时快照和历史数据正常。
-3. 完成正常、重复、断网、Redis 拒绝写入和 MPC 重启联调。
-4. 设置 `JUDGE_SOURCE_ENABLED=true` 并重启 MPC。
+2. 确认 MPC 与 Judge 的 Redis 地址及 `IOT_REDIS_DB` 完全一致。
+3. 使用 `12_new_mpc.sh` 部署 MPC；脚本默认向容器传入 `JUDGE_SOURCE_ENABLED=true`。
+4. 完成正常、重复、断网、Redis 拒绝写入和 MPC 重启联调。仅在明确回退时设置 `IOT_JUDGE_SOURCE_ENABLED=false`。
 
 ## 2. Redis 使用方式
 
 Source 发布复用 `deviceResultWriter` 已有的 Redis Client 和连接池。正常路径把实时快照 `SET device:data:<device_id>` 与 `XADD judge:source` 放在同一个 Redis Pipeline 中，因此通常只有一次网络往返。
+
+MPC 的配置读取、订阅、心跳、实时快照和 Source 发布都使用 `redis.db`；环境变量 `REDIS_DB` 可以覆盖该值。它必须与 Judge 的 `REDIS_DB` 相同，默认均为 0。
 
 Pipeline 不等于事务：MPC 分别检查 `SET` 和 `XADD` 的结果，一个命令成功不代表另一个也成功。
 
@@ -120,5 +122,6 @@ UUID 生成或事件校验失败时，MPC 仍尝试写实时快照，记录 `SOU
 | `JUDGE_SOURCE_RETRY_COUNT` | `judge_source.retry_count` |
 | `JUDGE_SOURCE_RETRY_INTERVAL_MS` | `judge_source.retry_interval_ms` |
 | `JUDGE_SOURCE_MAX_EVENT_BYTES` | `judge_source.max_event_bytes` |
+| `REDIS_DB` | `redis.db` |
 
-无法解析的整数或布尔环境变量不会覆盖配置文件中的值。
+无法解析的整数、负数 Redis DB 或非法布尔环境变量不会覆盖配置文件中的值。
