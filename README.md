@@ -1,5 +1,25 @@
-## multiple-protocol-controller
-### for xlong
+# multiple-protocol-controller
+
+Go 工业设备采集与控制服务，支持 Modbus RTU/TCP、OPC UA、MQTT、BACnet/IP。读取平台发布的 Redis 配置，写实时快照、可选 InfluxDB 历史和 Judge Source。平台属性控制页面/HTTP 桥接尚未实现，不能与 MPC 已有 Redis 控制能力混为一谈。
+
+工具链以 go.mod 为准：`go 1.23.0`，`toolchain go1.24.7`。运行前配置 `configs/config.toml` 或环境变量并保证 Redis 可达。
+
+文档：[项目结构](PROJECT_SUMMARY.md)、[系统 MPC 架构](../documents/architecture/mpc.md)、[Judge Source 契约](docs/对接文档/MPC规则事件发布.md)、[部署指南](../documents/integration/server-deployment-guide.md)。跨仓库链接要求相邻检出。
+
+GitLab 主源 `https://49.233.192.84:18443/new-iot/multiple-protocol-controller.git`，本地/GitLab 主分支 `master`；GitHub 备份主分支为 `main`（推送 `master:main`）。推送前先拉取并合并双端新增提交。
+
+### 验证
+
+```sh
+go test ./...
+```
+
+测试不是实设备联调；真实读写及 Judge 服务端需要单独验收。
+
+### 配置刷新
+
+后端写入 `IOT:DEVICE` 后，在 `CFG_CHANGE` 发布固定 payload `IOT:DEVICE`；当前订阅器每次收到该 payload 都重新加载，不能按 payload 相同跳过后续通知。Redis DB 也必须与平台一致，见[发布契约](../documents/integration/device-publish-redis.md)。
+
 ### How to run
 - local
 ```
