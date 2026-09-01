@@ -33,7 +33,9 @@
 
 SubRedisChannel 已订阅 set_device_current_value，并调用 ProcessCommand；结果发布到 device_current_value_response。消息外层为 uid/data。data 每项的 device_id 当前实际按 serialNumber 查询 DeviceBySerial，这是历史字段命名，不能误传平台数据库 ID。
 
-控制分支涵盖 Modbus、OPC UA、MQTT、BACnet。MPC 有通道并不代表平台已有控制接口；用户权限、scope、审核、命令状态和设备执行确认必须由上层集成闭环。
+控制分支涵盖 Modbus、OPC UA、MQTT、BACnet。运行时同时校验属性可写标记与协议写点位，不再为只读属性建立控制映射。Modbus、OPC UA、BACnet 的可读写属性在写入成功后回读目标属性并比较；只写属性及 MQTT 发布成功返回 `unverified`，不会误报设备已执行。协议回执、回读或目标值验证失败返回 `failed`。
+
+`device_current_value_response` 保留历史 `control_command_result`，并增加 `verification_status` 与逐属性 `attributes`。MPC 有完整 Redis 控制和回执能力不代表平台已有 HTTP 控制接口；用户权限、设备 scope、命令追踪和审计仍由 iot-platform-backend 接入。
 
 ## MQTT
 
@@ -47,4 +49,4 @@ Broker 来自 GatewayInfo；账号密码优先设备 params，连接选项包括
 go test ./...
 ```
 
-重点回归：连续两次配置通知、实时 ID 契约、各协议参数解析、历史队列与 Judge Source 失败隔离。单测通过不等于实设备控制或 Judge 全链路通过。
+重点回归：连续两次配置通知、实时 ID 契约、各协议参数解析、只读属性拒绝控制、Modbus 回执错误、写后回读状态、历史队列与 Judge Source 失败隔离。单测通过不等于实设备控制或 Judge 全链路通过。

@@ -14,11 +14,23 @@ GitLab 主源 `https://49.233.192.84:18443/new-iot/multiple-protocol-controller.
 go test ./...
 ```
 
-测试不是实设备联调；真实读写及 Judge 服务端需要单独验收。
+测试不是实设备联调；真实读写、写后回读及 Judge 服务端需要单独验收。
 
 ### 配置刷新
 
 后端写入 `IOT:DEVICE` 后，在 `CFG_CHANGE` 发布固定 payload `IOT:DEVICE`；当前订阅器每次收到该 payload 都重新加载，不能按 payload 相同跳过后续通知。Redis DB 也必须与平台一致，见[发布契约](../documents/integration/device-publish-redis.md)。
+
+### 设备控制
+
+MPC 在 `set_device_current_value` 接收控制命令，并在 `device_current_value_response` 发布结果。只有属性 `access` 支持写操作且存在有效协议写点位时，运行时才会生成控制映射；只读属性即使错误携带写点位，也不会被执行。
+
+控制结果按属性返回：
+
+- `verified`：协议写入成功，且可读写属性的回读值在超时前与目标值一致；
+- `unverified`：指令已成功下发，但属性只写或协议无法可靠回读，设备最终状态不可验证；
+- `failed`：写入、协议回执、回读或目标值验证失败。
+
+Modbus、OPC UA 和 BACnet 的可读写属性会执行写后回读；MQTT 发布成功按 `unverified` 返回。回执保留原有 `control_command_result` 字段，同时增加设备级 `verification_status` 和逐属性 `attributes`，供平台后端后续接入。平台 HTTP 控制接口、用户权限、设备 scope 和操作审计仍由 `iot-platform-backend` 实现。
 
 ### How to run
 - local

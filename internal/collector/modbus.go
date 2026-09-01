@@ -151,6 +151,22 @@ func WaitCommandAck(ctx context.Context, netConn net.Conn, device config.DeviceR
 	if !verifyCRC(buf) {
 		return errors.New("crc mismatch")
 	}
+	if device.SlaveID > 0 && buf[0] != byte(device.SlaveID) {
+		return fmt.Errorf("device address mismatch: got %d, want %d", buf[0], device.SlaveID)
+	}
+	if int(buf[1]) != cmd.FunctionCode {
+		return fmt.Errorf("function code mismatch: got %d, want %d", buf[1], cmd.FunctionCode)
+	}
+	address := binary.BigEndian.Uint16(buf[2:4])
+	if uint64(address) != cmd.Address {
+		return fmt.Errorf("address mismatch: got %d, want %d", address, cmd.Address)
+	}
+	if (cmd.FunctionCode == 15 || cmd.FunctionCode == 16) && cmd.Quantity > 0 {
+		quantity := binary.BigEndian.Uint16(buf[4:6])
+		if int(quantity) != cmd.Quantity {
+			return fmt.Errorf("quantity mismatch: got %d, want %d", quantity, cmd.Quantity)
+		}
+	}
 	return nil
 }
 

@@ -371,6 +371,9 @@ func parseModbusPoints(dev DeviceConfig, slaveID uint64) ([]ModbusParam, []Modbu
 					Endian:       strings.ToUpper(strings.TrimSpace(pt.Endian)),
 				})
 			}
+			if !isWriteEnabled(prop.Access) {
+				continue
+			}
 			for _, pt := range cfg.Points.Write {
 				fc, fcErr := strconv.Atoi(pt.FunctionCode)
 				if fcErr != nil {
@@ -446,6 +449,9 @@ func parseOpcuaPoints(dev DeviceConfig) ([]OpcuaParam, []OpcuaCommand) {
 					ReadDisabled: isReadDisabled(prop.Access),
 					Unit:         prop.Unit,
 				})
+			}
+			if !isWriteEnabled(prop.Access) {
+				continue
 			}
 			for _, node := range cfg.Nodes.Write {
 				nodeID := strings.TrimSpace(node.NodeID)
@@ -530,6 +536,9 @@ func parseBacnetPoints(dev DeviceConfig) ([]BacnetParam, []BacnetCommand) {
 				ReadDisabled:       isReadDisabled(prop.Access),
 				Unit:               prop.Unit,
 			})
+		}
+		if !isWriteEnabled(prop.Access) {
+			continue
 		}
 		for _, obj := range cfg.Objects.Write {
 			propertyID, valid := normalizeBacnetPropertyIdentifier(obj.PropertyID)
@@ -769,6 +778,9 @@ func parseMqttPoints(dev DeviceConfig) ([]MqttParam, []MqttCommand) {
 					Unit:           prop.Unit,
 				})
 			}
+			if !isWriteEnabled(prop.Access) {
+				continue
+			}
 			for _, topic := range cfg.Topics.Publish {
 				pubTopic := replaceTopicVars(topic.Topic, dev.SerialNumber, dev.ID)
 				path := strings.TrimSpace(topic.Path)
@@ -842,6 +854,10 @@ func isReadDisabled(access string) bool {
 		return true
 	}
 	return access[0] != '1'
+}
+
+func isWriteEnabled(access string) bool {
+	return len(access) > 1 && access[1] == '1'
 }
 
 // buildMqttBroker 构建 MQTT Broker 地址

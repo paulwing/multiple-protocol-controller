@@ -90,6 +90,112 @@ func TestDeviceConfigUnmarshalsTypedParamList(t *testing.T) {
 	}
 }
 
+func TestBuildDeviceRuntimeRejectsWritePointForReadOnlyProperty(t *testing.T) {
+	dev := DeviceConfig{
+		ID:           "device-1",
+		SerialNumber: "serial-1",
+		Protocol:     "MODBUS_RTU",
+		Properties: []Property{{
+			ID:     "property-1",
+			Key:    "switch",
+			Name:   "开关",
+			Type:   "bool",
+			Access: "10",
+			Protocol: json.RawMessage(`{
+				"type":"MODBUS_RTU",
+				"points":{
+					"read":[{"functionCode":"01","address":"0"}],
+					"write":[{"functionCode":"05","address":"0"}]
+				}
+			}`),
+		}},
+		Params: []DeviceParam{{Key: "slaveID", Type: "string", Value: rawParamValue(`"1"`)}},
+	}
+	dev.GatewayInfo.IP = "127.0.0.1"
+	dev.GatewayInfo.Port = 502
+
+	runtime, err := buildDeviceRuntime(dev)
+	if err != nil {
+		t.Fatalf("buildDeviceRuntime() error = %v", err)
+	}
+	if len(runtime.WritePoints) != 0 {
+		t.Fatalf("len(WritePoints) = %d, want 0 for read-only property", len(runtime.WritePoints))
+	}
+}
+
+func TestBuildDeviceRuntimeKeepsWritePointForWritableProperty(t *testing.T) {
+	dev := DeviceConfig{
+		ID:           "device-1",
+		SerialNumber: "serial-1",
+		Protocol:     "MODBUS_RTU",
+		Properties: []Property{{
+			ID:     "property-1",
+			Key:    "switch",
+			Name:   "开关",
+			Type:   "bool",
+			Access: "01",
+			Protocol: json.RawMessage(`{
+				"type":"MODBUS_RTU",
+				"points":{
+					"read":[],
+					"write":[{"functionCode":"05","address":"0"}]
+				}
+			}`),
+		}},
+		Params: []DeviceParam{{Key: "slaveID", Type: "string", Value: rawParamValue(`"1"`)}},
+	}
+	dev.GatewayInfo.IP = "127.0.0.1"
+	dev.GatewayInfo.Port = 502
+
+	runtime, err := buildDeviceRuntime(dev)
+	if err != nil {
+		t.Fatalf("buildDeviceRuntime() error = %v", err)
+	}
+	if len(runtime.WritePoints) != 1 {
+		t.Fatalf("len(WritePoints) = %d, want 1 for write-only property", len(runtime.WritePoints))
+	}
+}
+
+func TestReadOnlyPropertyNeverProducesNonModbusWriteCommand(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol string
+		config   string
+		count    func(DeviceConfig) int
+	}{
+		{
+			name:     "OPC UA",
+			protocol: "OPCUA",
+			config:   `{"type":"OPCUA","nodes":{"read":[{"nodeId":"ns=2;s=read"}],"write":[{"nodeId":"ns=2;s=write"}]}}`,
+			count:    func(dev DeviceConfig) int { _, commands := parseOpcuaPoints(dev); return len(commands) },
+		},
+		{
+			name:     "BACnet",
+			protocol: "BACNET",
+			config:   `{"type":"BACNET","objects":{"read":[{"objectType":"analogValue","instance":1,"propertyId":"presentValue"}],"write":[{"objectType":"analogValue","instance":1,"propertyId":"presentValue"}]}}`,
+			count:    func(dev DeviceConfig) int { _, commands := parseBacnetPoints(dev); return len(commands) },
+		},
+		{
+			name:     "MQTT",
+			protocol: "MQTT",
+			config:   `{"type":"MQTT","topics":{"subscribe":[{"topic":"device/read","path":"value","qos":1}],"publish":[{"topic":"device/write","path":"value","qos":1}]}}`,
+			count:    func(dev DeviceConfig) int { _, commands := parseMqttPoints(dev); return len(commands) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dev := DeviceConfig{
+				ID: "device-1", SerialNumber: "serial-1", Protocol: tt.protocol,
+				Properties: []Property{{ID: "property-1", Key: "value", Type: "float", Access: "10", Protocol: json.RawMessage(tt.config)}},
+			}
+			if got := tt.count(dev); got != 0 {
+				t.Fatalf("write command count = %d, want 0 for read-only property", got)
+			}
+		})
+	}
+}
+
 func rawParamValue(raw string) json.RawMessage {
 	return json.RawMessage(raw)
 }
