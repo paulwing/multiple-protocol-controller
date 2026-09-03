@@ -26,7 +26,7 @@
 
 - 实时：device:data:{设备数据库ID}。内部快照可能按编号管理，但 Redis key 由 device.Config.ID 构造，不是 serialNumber。
 - 历史：实时写入成功后入内存队列，由后台 worker 批量写 InfluxDB；队列满或重试耗尽会丢弃相应历史点。
-- Judge：采集时发送严格五字段事件到 judge:source；Pipeline SET/XADD 不是事务，无持久补发保证。详见[Source 契约](docs/对接文档/MPC规则事件发布.md)。
+- Judge：通过独立有界队列向 Redis Pub/Sub 频道 `iot:judge:device-events` 发布严格五字段事件；与实时缓存、历史写入分别限流，没有持久补发或消费组。详见[Source 契约](docs/对接文档/MPC规则事件发布.md)。
 - 服务心跳：server:status:mpc。
 
 ## 控制语义

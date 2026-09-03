@@ -37,21 +37,22 @@ func TestApplyRedisEnvOverridesKeepsDBForInvalidValue(t *testing.T) {
 
 func TestApplyJudgeSourceEnvOverrides(t *testing.T) {
 	t.Setenv("JUDGE_SOURCE_ENABLED", "true")
-	t.Setenv("JUDGE_SOURCE_STREAM", "judge:source:test")
+	t.Setenv("JUDGE_SOURCE_CHANNEL", "iot:judge:test")
 	t.Setenv("JUDGE_SOURCE_WRITE_TIMEOUT_MS", "120")
-	t.Setenv("JUDGE_SOURCE_RETRY_COUNT", "2")
-	t.Setenv("JUDGE_SOURCE_RETRY_INTERVAL_MS", "25")
+	t.Setenv("JUDGE_SOURCE_WORKER_COUNT", "4")
+	t.Setenv("JUDGE_SOURCE_QUEUE_SIZE", "2048")
+	t.Setenv("JUDGE_SOURCE_QUEUE_MAX_BYTES", "16777216")
 	t.Setenv("JUDGE_SOURCE_MAX_EVENT_BYTES", "32768")
 
 	cfg := &config.Config{}
 	applyJudgeSourceEnvOverrides(cfg)
 
-	if !cfg.JudgeSource.Enabled || cfg.JudgeSource.Stream != "judge:source:test" {
+	if !cfg.JudgeSource.Enabled || cfg.JudgeSource.Channel != "iot:judge:test" {
 		t.Fatalf("JudgeSource = %#v", cfg.JudgeSource)
 	}
 	if cfg.JudgeSource.WriteTimeoutMS != 120 ||
-		cfg.JudgeSource.RetryCount != 2 ||
-		cfg.JudgeSource.RetryIntervalMS != 25 ||
+		cfg.JudgeSource.WorkerCount != 4 || cfg.JudgeSource.QueueSize != 2048 ||
+		cfg.JudgeSource.QueueMaxBytes != 16777216 ||
 		cfg.JudgeSource.MaxEventBytes != 32768 {
 		t.Fatalf("JudgeSource = %#v", cfg.JudgeSource)
 	}
@@ -59,21 +60,20 @@ func TestApplyJudgeSourceEnvOverrides(t *testing.T) {
 
 func TestApplyJudgeSourceEnvOverridesKeepsValuesForInvalidIntegers(t *testing.T) {
 	t.Setenv("JUDGE_SOURCE_WRITE_TIMEOUT_MS", "invalid")
-	t.Setenv("JUDGE_SOURCE_RETRY_COUNT", "invalid")
-	t.Setenv("JUDGE_SOURCE_RETRY_INTERVAL_MS", "invalid")
+	t.Setenv("JUDGE_SOURCE_WORKER_COUNT", "invalid")
+	t.Setenv("JUDGE_SOURCE_QUEUE_SIZE", "invalid")
+	t.Setenv("JUDGE_SOURCE_QUEUE_MAX_BYTES", "invalid")
 	t.Setenv("JUDGE_SOURCE_MAX_EVENT_BYTES", "invalid")
 
 	cfg := &config.Config{JudgeSource: config.JudgeSourceCfg{
-		WriteTimeoutMS:  100,
-		RetryCount:      1,
-		RetryIntervalMS: 20,
-		MaxEventBytes:   65536,
+		WriteTimeoutMS: 100, WorkerCount: 4, QueueSize: 2048,
+		QueueMaxBytes: 16777216, MaxEventBytes: 65536,
 	}}
 	applyJudgeSourceEnvOverrides(cfg)
 
 	if cfg.JudgeSource.WriteTimeoutMS != 100 ||
-		cfg.JudgeSource.RetryCount != 1 ||
-		cfg.JudgeSource.RetryIntervalMS != 20 ||
+		cfg.JudgeSource.WorkerCount != 4 || cfg.JudgeSource.QueueSize != 2048 ||
+		cfg.JudgeSource.QueueMaxBytes != 16777216 ||
 		cfg.JudgeSource.MaxEventBytes != 65536 {
 		t.Fatalf("JudgeSource = %#v", cfg.JudgeSource)
 	}

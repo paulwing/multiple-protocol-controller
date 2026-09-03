@@ -173,17 +173,22 @@ value_number, value_bool, value_string
 
 ### Judge Rule Events
 
-MPC publishes collected property changes to the Judge Redis Stream. Local configuration remains disabled by default, while `12_new_mpc.sh` enables the already-integrated five-field publisher in production unless `IOT_JUDGE_SOURCE_ENABLED=false` is set explicitly.
+MPC publishes collected property changes to the Judge Redis Pub/Sub channel `iot:judge:device-events`. Local configuration remains disabled by default, while `12_new_mpc.sh` enables the publisher unless `IOT_JUDGE_SOURCE_ENABLED=false` is set explicitly.
 
-MPC and Judge must use the same Redis address and logical database. MPC reads the database from `redis.db` or the `REDIS_DB` environment variable; the production script passes `${IOT_REDIS_DB:-0}` to match the Judge deployment.
+Both MPC and Judge deployment scripts read the shared `IOT_JUDGE_SOURCE_CHANNEL` from `project.sh` (default `iot:judge:device-events`). Set it once for both containers; changing only one side disconnects live evaluation. Judge's admission timeout is configured separately with `IOT_JUDGE_SOURCE_ADMISSION_TIMEOUT` (default `5s`).
+
+MPC and Judge must use the same Redis address. The logical database still selects the realtime snapshot/device catalog keys, but Redis Pub/Sub itself is not isolated by DB number.
 
 ```toml
 [judge_source]
 enabled = false
-stream = "judge:source"
+channel = "iot:judge:device-events"
 write_timeout_ms = 200
-retry_count = 1
-retry_interval_ms = 20
+worker_count = 8
+queue_size = 2048
+queue_max_bytes = 16777216
+device_queue_size = 64
+device_queue_max_bytes = 1048576
 max_event_bytes = 65536
 ```
 
@@ -191,23 +196,37 @@ Environment overrides:
 
 ```text
 JUDGE_SOURCE_ENABLED
-JUDGE_SOURCE_STREAM
+JUDGE_SOURCE_CHANNEL
 JUDGE_SOURCE_WRITE_TIMEOUT_MS
-JUDGE_SOURCE_RETRY_COUNT
-JUDGE_SOURCE_RETRY_INTERVAL_MS
+JUDGE_SOURCE_WORKER_COUNT
+JUDGE_SOURCE_QUEUE_SIZE
+JUDGE_SOURCE_QUEUE_MAX_BYTES
+JUDGE_SOURCE_DEVICE_QUEUE_SIZE
+JUDGE_SOURCE_DEVICE_QUEUE_MAX_BYTES
 JUDGE_SOURCE_MAX_EVENT_BYTES
 REDIS_DB
 ```
 
-`retry_count` is the number of additional `XADD` attempts after the initial Pipeline attempt. Runtime normalization limits the write timeout to 2 seconds, retries to 3, retry interval to 1 second, and event size to 64 KiB.
+The collector creates one complete JSON document with nested `values`, then tries a non-blocking enqueue. A fixed-size worker pool dynamically takes ready devices from one shared scheduler. Only one publication from a device may be in flight at a time, so that device stays ordered without being permanently pinned to a worker. After one publication, a device with more pending events returns to the end of the ready-device queue so other devices get a turn. A message gets at most one Redis `PUBLISH` attempt; both application retry and Redis client command retry are disabled, and pending events are not guaranteed to drain on shutdown.
 
-When enabled, MPC reuses the realtime writer's existing Redis client. The normal path pipelines the existing realtime `SET` and Judge `XADD` in one Redis round trip, but Pipeline is not transactional and both command results are checked separately. Every logical event receives one canonical lowercase UUIDv4 and all finite retries reuse the exact five-field payload. MPC does not create a second Judge Redis client, read `judge:ingress`, or trim `judge:source`.
+The Judge publisher uses an isolated Redis client, so already-enqueued Source events do not wait for the snapshot client's connection pool or for a collector's `SET device:data:<device_id>` call to return. The collector still performs that `SET` synchronously; a slow `SET` can delay collection and the production of subsequent events. Both clients also share the configured Redis server. `worker_count` limits concurrent `PUBLISH` calls; it is not a device count or a permanent partition count.
 
-There is no local persistent queue or in-memory recovery queue. A failed Source write receives only the configured finite synchronous retries. If all attempts fail, MPC logs a stable `reason_code`, drops that rule event, and continues collecting. A successful realtime `SET` still permits the existing history write even when Source delivery fails.
+Admission checks both global budgets (2,048 waiting items and 16 MiB of accepted-but-not-finished payloads by default) and per-device budgets (64 accepted-but-not-finished items and 1 MiB by default). Per-device counts and bytes include the in-flight publication and are released on every publication outcome. Exceeding any budget drops only the arriving Judge event; existing FIFO entries are not merged or overwritten. Nonpositive device limits use defaults; limits above the corresponding normalized global budget are clamped to it. These defaults bound a single hot device's footprint but do not guarantee capacity for every device under sustained aggregate overload. Docker overrides use `IOT_JUDGE_SOURCE_DEVICE_QUEUE_SIZE` and `IOT_JUDGE_SOURCE_DEVICE_QUEUE_MAX_BYTES`.
+
+Judge client construction does not connect or `PING`; publisher workers connect on demand. Network failures drop the current event without stopping acquisition, and subsequent events can try normally without replaying failed events. Invalid publisher setup disables only the Judge branch and records `SOURCE_PUBLISHER_UNAVAILABLE`. The existing snapshot client's startup check is unchanged: this does not make acquisition independent of Redis itself.
+
+`write_timeout_ms` (default 200, maximum 2,000) supplies one publication context deadline beginning when a worker takes an event, not at enqueue. The Judge client enables `ContextTimeoutEnabled`, so handshake and command I/O honor that deadline instead of obtaining a fresh full timeout at each stage; pool waits also observe the context. The pool's background dialing uses its own `DialTimeout` and need not stop at the exact moment a caller times out; it does not replay that caller's event. Per-stage read/write/pool timeout settings remain as fallback limits. This is a publication-call budget, not a hard real-time bound or a deadline for Judge rule completion. It does not alter the snapshot client's timeout, retry, or pool settings.
+
+Queue full, byte limit, timeout, Redis error, zero subscribers, invalid payload, or oversize payload ends the current Judge event's attempt without retry. Failure reporting on collecting and publishing callers only increments fixed-size atomic counters. One independent background worker attempts to flush summaries every second, with `reason_code` and `failure_count`; it never retains event payloads or builds a log-event queue. Zero subscribers has the distinct code `SOURCE_NO_SUBSCRIBERS`. A slow log sink delays these summaries, not the Judge failure-reporting caller or publisher shutdown; final pending counters may be lost on shutdown. This does not make existing snapshot, history, or protocol logs asynchronous. Snapshot and history behavior is unchanged, and MPC publication-pressure UI work remains deferred.
+
+See [Judge publication and collection boundary review](docs/代码审查/Judge发布分支与采集链路边界审查.md) for remaining publisher issues, acquisition side effects, and pre-Judge behavior.
+
+Pub/Sub is at-most-once: it has no Redis key, backlog, replay, acknowledgement, or offline retention. MPC never writes a fallback Stream, file, or database queue. Judge downtime or a broken subscription therefore loses messages during the gap by design.
 
 Production activation:
 
-1. Deploy Judge with the strict five-field UUIDv4 contract.
-2. Ensure MPC and Judge receive the same `IOT_REDIS_DB` value.
+1. Stop old MPC publication and deploy the Pub/Sub Judge first.
+2. Wait until Judge has subscribed to `iot:judge:device-events` and is ready.
 3. Deploy MPC with `12_new_mpc.sh`; Judge Source is enabled by default.
-4. Set `IOT_JUDGE_SOURCE_ENABLED=false` only when an explicit rollback requires MPC to stop producing new Source events.
+4. Verify that `PUBLISH` reports an active subscriber and that alarm SSE is visible.
+5. Set `IOT_JUDGE_SOURCE_ENABLED=false` only when an explicit rollback requires MPC to stop producing Source events.

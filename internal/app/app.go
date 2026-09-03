@@ -175,27 +175,42 @@ func applyJudgeSourceEnvOverrides(cfg *config.Config) {
 			cfg.JudgeSource.Enabled = parsed
 		}
 	}
-	if value := os.Getenv("JUDGE_SOURCE_STREAM"); value != "" {
-		cfg.JudgeSource.Stream = value
+	if value := os.Getenv("JUDGE_SOURCE_CHANNEL"); value != "" {
+		cfg.JudgeSource.Channel = value
 	}
 	if value := os.Getenv("JUDGE_SOURCE_WRITE_TIMEOUT_MS"); value != "" {
 		if parsed, err := strconv.Atoi(value); err == nil {
 			cfg.JudgeSource.WriteTimeoutMS = parsed
 		}
 	}
-	if value := os.Getenv("JUDGE_SOURCE_RETRY_COUNT"); value != "" {
+	if value := os.Getenv("JUDGE_SOURCE_WORKER_COUNT"); value != "" {
 		if parsed, err := strconv.Atoi(value); err == nil {
-			cfg.JudgeSource.RetryCount = parsed
+			cfg.JudgeSource.WorkerCount = parsed
 		}
 	}
-	if value := os.Getenv("JUDGE_SOURCE_RETRY_INTERVAL_MS"); value != "" {
+	if value := os.Getenv("JUDGE_SOURCE_QUEUE_SIZE"); value != "" {
 		if parsed, err := strconv.Atoi(value); err == nil {
-			cfg.JudgeSource.RetryIntervalMS = parsed
+			cfg.JudgeSource.QueueSize = parsed
+		}
+	}
+	if value := os.Getenv("JUDGE_SOURCE_QUEUE_MAX_BYTES"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.JudgeSource.QueueMaxBytes = parsed
 		}
 	}
 	if value := os.Getenv("JUDGE_SOURCE_MAX_EVENT_BYTES"); value != "" {
 		if parsed, err := strconv.Atoi(value); err == nil {
 			cfg.JudgeSource.MaxEventBytes = parsed
+		}
+	}
+	if value := os.Getenv("JUDGE_SOURCE_DEVICE_QUEUE_SIZE"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.JudgeSource.DeviceQueueSize = parsed
+		}
+	}
+	if value := os.Getenv("JUDGE_SOURCE_DEVICE_QUEUE_MAX_BYTES"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.JudgeSource.DeviceQueueMaxBytes = parsed
 		}
 	}
 }

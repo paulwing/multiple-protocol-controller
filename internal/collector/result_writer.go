@@ -38,16 +38,15 @@ func InitResultWriter(ctx context.Context, cfg *config.Config) error {
 		return nil
 	}
 
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	client, err := store.NewRedisClient(ctx, cfg.Redis.Address, cfg.Redis.Pwd, cfg.Redis.DB)
 	if err != nil {
 		return fmt.Errorf("init collector redis client failed: %w", err)
 	}
 	judgeSource := normalizedJudgeSourceConfig(cfg.JudgeSource)
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	resultWriter = &deviceResultWriter{
+	writer := &deviceResultWriter{
 		ctx:         ctx,
 		redis:       client,
 		history:     newHistoryWriter(ctx, cfg.Influx),
@@ -55,6 +54,15 @@ func InitResultWriter(ctx context.Context, cfg *config.Config) error {
 		judgeSource: judgeSource,
 		newEventID:  newJudgeEventID,
 	}
+	if judgeSource.enabled {
+		writer.initializeJudgePublisher(store.NewRedisPublishClient(
+			cfg.Redis.Address,
+			cfg.Redis.Pwd,
+			cfg.Redis.DB,
+			judgeSource.writeTimeout,
+		))
+	}
+	resultWriter = writer
 
 	go func() {
 		<-ctx.Done()
@@ -63,6 +71,9 @@ func InitResultWriter(ctx context.Context, cfg *config.Config) error {
 		resultWriterMu.RUnlock()
 		if writer != nil && writer.history != nil {
 			writer.history.stop()
+		}
+		if writer != nil && writer.judgePublisher != nil {
+			writer.judgePublisher.stop()
 		}
 		_ = client.Close()
 
@@ -74,6 +85,29 @@ func InitResultWriter(ctx context.Context, cfg *config.Config) error {
 	return nil
 }
 
+// initializeJudgePublisher runs only during writer setup, before collection can
+// observe the writer. A publisher setup failure disables this optional branch;
+// it must not close the snapshot client or stop the history writer.
+func (w *deviceResultWriter) initializeJudgePublisher(client judgeSourceRedis) {
+	publisher, err := newJudgeSourcePublisher(w.ctx, w.judgeSource, client)
+	if err == nil {
+		w.judgePublisher = publisher
+		w.judgeFailureLog = publisher.failureLog
+		return
+	}
+	if client != nil {
+		_ = client.Close()
+	}
+	w.judgeSource.enabled = false
+	w.judgeFailureLog = &judgeSourceFailureLog{}
+	w.judgeFailureLog.record("SOURCE_PUBLISHER_UNAVAILABLE")
+	logContext := w.ctx
+	if logContext == nil {
+		logContext = context.Background()
+	}
+	go w.judgeFailureLog.run(logContext)
+}
+
 // RefreshResultWriter rebuilds the in-memory snapshot cache using the latest IoT configuration.
 func RefreshResultWriter(cfg config.IotCfgType) {
 	writer := currentResultWriter()
@@ -83,15 +117,6 @@ func RefreshResultWriter(cfg config.IotCfgType) {
 	if err := writer.applyConfig(cfg); err != nil {
 		logger.Log.Warn("refresh result writer failed", zap.Error(err))
 	}
-}
-
-// UpdateDeviceStatus writes the latest device status (and g_sys_status) to the realtime snapshot.
-func UpdateDeviceStatus(serial string, status int, desc string) {
-	writer := currentResultWriter()
-	if writer == nil {
-		return
-	}
-	writer.updateStatus(serial, status, desc)
 }
 
 func recordCollectedValue(device config.DeviceRuntime, param config.ModbusParam, value interface{}) {
@@ -148,13 +173,15 @@ func currentResultWriter() *deviceResultWriter {
 }
 
 type deviceResultWriter struct {
-	ctx         context.Context
-	redis       resultWriterRedis
-	history     *historyWriter
-	mu          sync.RWMutex
-	snapshots   map[string]*deviceSnapshot
-	judgeSource judgeSourceConfig
-	newEventID  func() (string, error)
+	ctx             context.Context
+	redis           resultWriterRedis
+	history         *historyWriter
+	mu              sync.RWMutex
+	snapshots       map[string]*deviceSnapshot
+	judgeSource     judgeSourceConfig
+	judgePublisher  *judgeSourcePublisher
+	judgeFailureLog *judgeSourceFailureLog
+	newEventID      func() (string, error)
 }
 
 type deviceSnapshot struct {
@@ -168,8 +195,6 @@ type deviceSnapshot struct {
 
 type resultWriterRedis interface {
 	Set(context.Context, string, interface{}, time.Duration) error
-	SetAndXAdd(context.Context, string, any, string, map[string]any) store.SnapshotStreamWriteResult
-	XAdd(context.Context, string, map[string]any) (string, error)
 }
 
 type deviceMeta struct {
@@ -326,55 +351,33 @@ func (w *deviceResultWriter) recordValue(
 	if baseContext == nil {
 		baseContext = context.Background()
 	}
-	if !w.judgeSource.enabled {
-		if err := w.redis.Set(baseContext, key, string(payload), 0); err != nil {
-			return err
+	if w.judgeSource.enabled {
+		newEventID := w.newEventID
+		if newEventID == nil {
+			newEventID = newJudgeEventID
 		}
-		w.history.writeAsync(history)
-		return nil
-	}
-
-	newEventID := w.newEventID
-	if newEventID == nil {
-		newEventID = newJudgeEventID
-	}
-	eventID, sourceErr := newEventID()
-	var event judgeSourceEvent
-	if sourceErr == nil {
-		event, sourceErr = buildJudgeSourceEvent(
-			eventID, device.Config.ID, updatedPoint, time.UnixMilli(result.Timestamp),
-			snapshot.cloneValues(), w.judgeSource.maximumEventBytes,
-		)
-	}
-	if sourceErr != nil {
-		realtimeErr := w.redis.Set(baseContext, key, string(payload), 0)
-		if realtimeErr == nil {
-			w.history.writeAsync(history)
-		}
-		w.logJudgeSourceFailure(device.Config.ID, updatedPoint, "SOURCE_EVENT_INVALID", sourceErr)
-		return realtimeErr
-	}
-
-	streamValues := event.redisValues()
-	writeContext, cancel := context.WithTimeout(baseContext, w.judgeSource.writeTimeout)
-	writeResult := w.redis.SetAndXAdd(writeContext, key, string(payload), w.judgeSource.stream, streamValues)
-	cancel()
-
-	if writeResult.SnapshotErr == nil {
-		w.history.writeAsync(history)
-	}
-	if writeResult.StreamErr != nil {
-		sourceErr = w.retryJudgeSource(baseContext, streamValues, writeResult.StreamErr)
-		if sourceErr != nil {
-			w.logJudgeSourceFailure(
-				device.Config.ID,
-				updatedPoint,
-				classifyJudgeSourceError(sourceErr),
-				sourceErr,
+		eventID, sourceErr := newEventID()
+		var event judgeSourceEvent
+		if sourceErr == nil {
+			event, sourceErr = buildJudgeSourceEvent(
+				eventID, device.Config.ID, updatedPoint, time.UnixMilli(result.Timestamp),
+				snapshot.cloneValues(), w.judgeSource.maximumEventBytes,
 			)
 		}
+		if sourceErr != nil {
+			w.logJudgeSourceFailure("SOURCE_EVENT_INVALID")
+		} else if w.judgePublisher == nil {
+			w.logJudgeSourceFailure("SOURCE_PUBLISHER_UNAVAILABLE")
+		} else {
+			w.judgePublisher.enqueue(event)
+		}
 	}
-	return writeResult.SnapshotErr
+
+	snapshotErr := w.redis.Set(baseContext, key, string(payload), 0)
+	if snapshotErr == nil {
+		w.history.writeAsync(history)
+	}
+	return snapshotErr
 }
 
 func deviceDataKey(device config.DeviceRuntime) (string, error) {
@@ -419,33 +422,6 @@ func (w *deviceResultWriter) remove(serial string) {
 	delete(w.snapshots, serial)
 }
 
-func (w *deviceResultWriter) updateStatus(serial string, status int, desc string) {
-	w.mu.RLock()
-	snap := w.snapshots[serial]
-	w.mu.RUnlock()
-	if snap == nil {
-		candidate := &deviceSnapshot{
-			meta:       deviceMeta{DeviceID: serial, AddressID: serial},
-			values:     make(map[string]interface{}),
-			pointNames: make(map[string]string),
-			status:     defaultDeviceStatus,
-			statusDesc: defaultStatusDesc,
-		}
-		w.mu.Lock()
-		if snap = w.snapshots[serial]; snap == nil {
-			snap = candidate
-			w.snapshots[serial] = snap
-		}
-		w.mu.Unlock()
-	}
-	snap.mu.Lock()
-	defer snap.mu.Unlock()
-	snap.status = strconv.Itoa(status)
-	if desc != "" {
-		snap.statusDesc = desc
-	}
-}
-
 func (d *deviceSnapshot) cloneResult() deviceResult {
 	res := deviceResult{
 		DeviceID:          d.meta.DeviceID,
@@ -479,59 +455,20 @@ func (d *deviceSnapshot) cloneValues() map[string]any {
 	return result
 }
 
-func (w *deviceResultWriter) retryJudgeSource(
-	ctx context.Context,
-	streamValues map[string]any,
-	initialErr error,
-) error {
-	lastErr := initialErr
-	for attempt := 0; attempt < w.judgeSource.retryCount; attempt++ {
-		if err := waitForJudgeRetry(ctx, w.judgeSource.retryInterval); err != nil {
-			return err
-		}
-		attemptContext, cancel := context.WithTimeout(ctx, w.judgeSource.writeTimeout)
-		_, err := w.redis.XAdd(attemptContext, w.judgeSource.stream, streamValues)
-		cancel()
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-	}
-	return lastErr
-}
-
-func waitForJudgeRetry(ctx context.Context, delay time.Duration) error {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
-func (w *deviceResultWriter) logJudgeSourceFailure(
-	deviceID string,
-	updatedPoint string,
-	reasonCode string,
-	err error,
-) {
-	if logger.Log == nil {
+func (w *deviceResultWriter) logJudgeSourceFailure(reasonCode string) {
+	if w.judgePublisher != nil {
+		w.judgePublisher.logFailure(reasonCode)
 		return
 	}
-	logger.Log.Warn(
-		"judge source event dropped",
-		zap.String("reason_code", reasonCode),
-		zap.String("deviceID", deviceID),
-		zap.String("updatedPoint", updatedPoint),
-		zap.Error(err),
-	)
+	w.judgeFailureLog.record(reasonCode)
 }
 
 func classifyJudgeSourceError(err error) string {
 	if err == nil {
 		return ""
+	}
+	if errors.Is(err, errJudgeSourceNoSubscribers) {
+		return "SOURCE_NO_SUBSCRIBERS"
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "REDIS_TIMEOUT"

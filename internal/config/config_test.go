@@ -17,10 +17,11 @@ db = 4
 
 [judge_source]
 enabled = true
-stream = "judge:source:test"
+channel = "iot:judge:test"
 write_timeout_ms = 120
-retry_count = 1
-retry_interval_ms = 20
+worker_count = 4
+queue_size = 2048
+queue_max_bytes = 16777216
 max_event_bytes = 65536
 `)
 	if err := os.WriteFile(path, content, 0o600); err != nil {
@@ -37,12 +38,12 @@ max_event_bytes = 65536
 	if !cfg.JudgeSource.Enabled {
 		t.Fatal("JudgeSource.Enabled = false, want true")
 	}
-	if cfg.JudgeSource.Stream != "judge:source:test" {
-		t.Fatalf("JudgeSource.Stream = %q, want %q", cfg.JudgeSource.Stream, "judge:source:test")
+	if cfg.JudgeSource.Channel != "iot:judge:test" {
+		t.Fatalf("JudgeSource.Channel = %q, want %q", cfg.JudgeSource.Channel, "iot:judge:test")
 	}
 	if cfg.JudgeSource.WriteTimeoutMS != 120 ||
-		cfg.JudgeSource.RetryCount != 1 ||
-		cfg.JudgeSource.RetryIntervalMS != 20 ||
+		cfg.JudgeSource.WorkerCount != 4 || cfg.JudgeSource.QueueSize != 2048 ||
+		cfg.JudgeSource.QueueMaxBytes != 16777216 ||
 		cfg.JudgeSource.MaxEventBytes != 65536 {
 		t.Fatalf("JudgeSource = %#v", cfg.JudgeSource)
 	}

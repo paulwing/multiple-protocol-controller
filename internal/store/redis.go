@@ -14,12 +14,6 @@ type RedisClient struct {
 	rdb *redis.Client
 }
 
-type SnapshotStreamWriteResult struct {
-	StreamID    string
-	SnapshotErr error
-	StreamErr   error
-}
-
 // 初始化 Redis 客户端
 func NewRedisClient(ctx context.Context, addr, password string, db int) (*RedisClient, error) {
 	rdb := redis.NewClient(&redis.Options{
@@ -33,6 +27,34 @@ func NewRedisClient(ctx context.Context, addr, password string, db int) (*RedisC
 		return nil, err
 	}
 	return redisClient, nil
+}
+
+// NewRedisPublishClient creates the isolated Judge publisher without connecting
+// or probing Redis. Workers wait for connections lazily within their publication
+// context; network failure must not become a new acquisition startup dependency.
+// Command retries are disabled. Connection waits and command I/O honor the caller
+// deadline; the pool's background dialing has its own DialTimeout.
+func NewRedisPublishClient(
+	addr string,
+	password string,
+	db int,
+	timeout time.Duration,
+) *RedisClient {
+	if timeout <= 0 {
+		timeout = 200 * time.Millisecond
+	}
+	rdb := redis.NewClient(&redis.Options{
+		Addr:                  addr,
+		Password:              password,
+		DB:                    db,
+		MaxRetries:            -1,
+		ContextTimeoutEnabled: true,
+		DialTimeout:           timeout,
+		ReadTimeout:           timeout,
+		WriteTimeout:          timeout,
+		PoolTimeout:           timeout,
+	})
+	return &RedisClient{rdb: rdb}
 }
 
 // 封装带超时的 GET
@@ -59,51 +81,6 @@ func (c *RedisClient) Set(ctx context.Context, key string, value interface{}, ex
 	return c.rdb.Set(ctx, key, value, expiration).Err()
 }
 
-func (c *RedisClient) SetAndXAdd(
-	ctx context.Context,
-	snapshotKey string,
-	snapshotValue any,
-	streamKey string,
-	streamValues map[string]any,
-) SnapshotStreamWriteResult {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	pipe := c.rdb.Pipeline()
-
-	setCmd := pipe.Set(ctx, snapshotKey, snapshotValue, 0)
-	addCmd := pipe.XAdd(ctx, &redis.XAddArgs{
-		Stream: streamKey,
-		ID:     "*",
-		Values: streamValues,
-	})
-	_, execErr := pipe.Exec(ctx)
-
-	result := SnapshotStreamWriteResult{
-		SnapshotErr: setCmd.Err(),
-		StreamErr:   addCmd.Err(),
-	}
-	if result.SnapshotErr == nil && result.StreamErr == nil && execErr != nil {
-		result.SnapshotErr = execErr
-		result.StreamErr = execErr
-	}
-	if result.StreamErr == nil {
-		result.StreamID = addCmd.Val()
-	}
-	return result
-}
-
-func (c *RedisClient) XAdd(ctx context.Context, streamKey string, streamValues map[string]any) (string, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return c.rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: streamKey,
-		ID:     "*",
-		Values: streamValues,
-	}).Result()
-}
-
 // Delete removes the specified key using the provided context (or background if nil).
 func (c *RedisClient) Delete(ctx context.Context, key string) error {
 	if ctx == nil {
@@ -114,10 +91,21 @@ func (c *RedisClient) Delete(ctx context.Context, key string) error {
 
 // Publish 将消息写入指定频道，可选超时控制
 func (c *RedisClient) Publish(ctx context.Context, channel string, payload interface{}) error {
+	_, err := c.PublishWithSubscriberCount(ctx, channel, payload)
+	return err
+}
+
+// PublishWithSubscriberCount publishes once and returns the number of clients
+// that were subscribed when Redis accepted the command.
+func (c *RedisClient) PublishWithSubscriberCount(
+	ctx context.Context,
+	channel string,
+	payload interface{},
+) (int64, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return c.rdb.Publish(ctx, channel, payload).Err()
+	return c.rdb.Publish(ctx, channel, payload).Result()
 }
 
 // Close shuts down the underlying Redis client to release resources.

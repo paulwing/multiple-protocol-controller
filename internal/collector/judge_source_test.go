@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"encoding/json"
 	"math"
 	"reflect"
 	"strings"
@@ -12,13 +13,18 @@ import (
 
 func TestNormalizeJudgeSourceConfig(t *testing.T) {
 	disabled := normalizedJudgeSourceConfig(config.JudgeSourceCfg{})
-	if disabled.enabled || disabled.stream != "judge:source" || disabled.writeTimeout != 200*time.Millisecond ||
-		disabled.retryCount != 1 || disabled.retryInterval != 20*time.Millisecond || disabled.maximumEventBytes != 64<<10 {
+	if disabled.enabled || disabled.channel != defaultJudgeSourceChannel || disabled.writeTimeout != 200*time.Millisecond ||
+		disabled.workerCount != 8 || disabled.queueSize != 2048 || disabled.queueMaxBytes != 16<<20 ||
+		disabled.maximumEventBytes != 64<<10 {
 		t.Fatalf("disabled defaults = %+v", disabled)
 	}
-	bounded := normalizedJudgeSourceConfig(config.JudgeSourceCfg{Enabled: true, Stream: " custom:source ", WriteTimeoutMS: 60_000, RetryCount: 100, RetryIntervalMS: 60_000, MaxEventBytes: 1 << 20})
-	if !bounded.enabled || bounded.stream != "custom:source" || bounded.writeTimeout != 2*time.Second ||
-		bounded.retryCount != 3 || bounded.retryInterval != time.Second || bounded.maximumEventBytes != 64<<10 {
+	bounded := normalizedJudgeSourceConfig(config.JudgeSourceCfg{
+		Enabled: true, Channel: " custom:source ", WriteTimeoutMS: 60_000,
+		WorkerCount: 100, QueueSize: 1, QueueMaxBytes: 2 << 30, MaxEventBytes: 1 << 20,
+	})
+	if !bounded.enabled || bounded.channel != "custom:source" || bounded.writeTimeout != 2*time.Second ||
+		bounded.workerCount != 64 || bounded.queueSize != 64 || bounded.queueMaxBytes != 1<<30 ||
+		bounded.maximumEventBytes != 64<<10 {
 		t.Fatalf("bounded config = %+v", bounded)
 	}
 }
@@ -47,12 +53,17 @@ func TestBuildJudgeSourceEventProducesExactFiveFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var got map[string]any
+	if err := json.Unmarshal(event.encoded, &got); err != nil {
+		t.Fatal(err)
+	}
 	want := map[string]any{
 		"event_id": eventID, "device_id": "device-1", "updated_point": "temperature",
-		"collected_at": "2026-08-11T01:02:03.456Z", "values": `{"online":true,"temperature":21.5}`,
+		"collected_at": "2026-08-11T01:02:03.456Z",
+		"values":       map[string]any{"online": true, "temperature": 21.5},
 	}
-	if !reflect.DeepEqual(event.redisValues(), want) {
-		t.Fatalf("fields = %#v, want %#v", event.redisValues(), want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("event = %#v, want %#v", got, want)
 	}
 }
 

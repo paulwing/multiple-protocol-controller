@@ -15,36 +15,42 @@ import (
 )
 
 const (
-	defaultJudgeSourceStream         = "judge:source"
-	defaultJudgeWriteTimeout         = 200 * time.Millisecond
-	maximumJudgeWriteTimeout         = 2 * time.Second
-	defaultJudgeRetryCount           = 1
-	maximumJudgeRetryCount           = 3
-	defaultJudgeRetryInterval        = 20 * time.Millisecond
-	maximumJudgeRetryInterval        = time.Second
-	maximumJudgeEventBytes           = 64 << 10
-	maximumJudgeValueKeys            = 64
-	maximumJudgePropertyRunes        = 128
-	maximumJudgePropertyBytes        = 512
-	maximumJudgeStringBytes          = 8 << 10
-	maximumJudgeNumberBytes          = 64
-	maximumJudgeDeviceIDRunes        = 64
-	estimatedRedisStreamIDByteLength = 32
+	defaultJudgeSourceChannel       = "iot:judge:device-events"
+	defaultJudgeWriteTimeout        = 200 * time.Millisecond
+	maximumJudgeWriteTimeout        = 2 * time.Second
+	defaultJudgeWorkerCount         = 8
+	maximumJudgeWorkerCount         = 64
+	defaultJudgeQueueSize           = 2_048
+	maximumJudgeQueueSize           = 1_048_576
+	defaultJudgeQueueMaxBytes       = 16 << 20
+	defaultJudgeDeviceQueueSize     = 64
+	defaultJudgeDeviceQueueMaxBytes = 1 << 20
+	maximumJudgeQueueMaxBytes       = 1 << 30
+	maximumJudgeEventBytes          = 64 << 10
+	maximumJudgeValueKeys           = 64
+	maximumJudgePropertyRunes       = 128
+	maximumJudgePropertyBytes       = 512
+	maximumJudgeStringBytes         = 8 << 10
+	maximumJudgeNumberBytes         = 64
+	maximumJudgeDeviceIDRunes       = 64
 )
 
 type judgeSourceConfig struct {
-	enabled           bool
-	stream            string
-	writeTimeout      time.Duration
-	retryCount        int
-	retryInterval     time.Duration
-	maximumEventBytes int
+	enabled             bool
+	channel             string
+	writeTimeout        time.Duration
+	workerCount         int
+	queueSize           int
+	queueMaxBytes       int
+	deviceQueueSize     int
+	deviceQueueMaxBytes int
+	maximumEventBytes   int
 }
 
 func normalizedJudgeSourceConfig(raw config.JudgeSourceCfg) judgeSourceConfig {
-	stream := strings.TrimSpace(raw.Stream)
-	if stream == "" {
-		stream = defaultJudgeSourceStream
+	channel := strings.TrimSpace(raw.Channel)
+	if channel == "" {
+		channel = defaultJudgeSourceChannel
 	}
 
 	writeTimeout := time.Duration(raw.WriteTimeoutMS) * time.Millisecond
@@ -55,20 +61,44 @@ func normalizedJudgeSourceConfig(raw config.JudgeSourceCfg) judgeSourceConfig {
 		writeTimeout = maximumJudgeWriteTimeout
 	}
 
-	retryCount := raw.RetryCount
-	if retryCount <= 0 {
-		retryCount = defaultJudgeRetryCount
+	workerCount := raw.WorkerCount
+	if workerCount <= 0 {
+		workerCount = defaultJudgeWorkerCount
 	}
-	if retryCount > maximumJudgeRetryCount {
-		retryCount = maximumJudgeRetryCount
+	if workerCount > maximumJudgeWorkerCount {
+		workerCount = maximumJudgeWorkerCount
 	}
 
-	retryInterval := time.Duration(raw.RetryIntervalMS) * time.Millisecond
-	if retryInterval <= 0 {
-		retryInterval = defaultJudgeRetryInterval
+	queueSize := raw.QueueSize
+	if queueSize <= 0 {
+		queueSize = defaultJudgeQueueSize
 	}
-	if retryInterval > maximumJudgeRetryInterval {
-		retryInterval = maximumJudgeRetryInterval
+	if queueSize > maximumJudgeQueueSize {
+		queueSize = maximumJudgeQueueSize
+	}
+	if queueSize < workerCount {
+		queueSize = workerCount
+	}
+	queueMaxBytes := raw.QueueMaxBytes
+	if queueMaxBytes <= 0 {
+		queueMaxBytes = defaultJudgeQueueMaxBytes
+	}
+	if queueMaxBytes > maximumJudgeQueueMaxBytes {
+		queueMaxBytes = maximumJudgeQueueMaxBytes
+	}
+	deviceQueueSize := raw.DeviceQueueSize
+	if deviceQueueSize <= 0 {
+		deviceQueueSize = defaultJudgeDeviceQueueSize
+	}
+	if deviceQueueSize > queueSize {
+		deviceQueueSize = queueSize
+	}
+	deviceQueueMaxBytes := raw.DeviceQueueMaxBytes
+	if deviceQueueMaxBytes <= 0 {
+		deviceQueueMaxBytes = defaultJudgeDeviceQueueMaxBytes
+	}
+	if deviceQueueMaxBytes > queueMaxBytes {
+		deviceQueueMaxBytes = queueMaxBytes
 	}
 
 	maximumEventBytes := raw.MaxEventBytes
@@ -77,12 +107,15 @@ func normalizedJudgeSourceConfig(raw config.JudgeSourceCfg) judgeSourceConfig {
 	}
 
 	return judgeSourceConfig{
-		enabled:           raw.Enabled,
-		stream:            stream,
-		writeTimeout:      writeTimeout,
-		retryCount:        retryCount,
-		retryInterval:     retryInterval,
-		maximumEventBytes: maximumEventBytes,
+		enabled:             raw.Enabled,
+		channel:             channel,
+		writeTimeout:        writeTimeout,
+		workerCount:         workerCount,
+		queueSize:           queueSize,
+		queueMaxBytes:       queueMaxBytes,
+		deviceQueueSize:     deviceQueueSize,
+		deviceQueueMaxBytes: deviceQueueMaxBytes,
+		maximumEventBytes:   maximumEventBytes,
 	}
 }
 
@@ -124,21 +157,12 @@ func validJudgeEventID(value string) bool {
 }
 
 type judgeSourceEvent struct {
-	eventID      string
-	deviceID     string
-	updatedPoint string
-	collectedAt  string
-	values       string
-}
-
-func (e judgeSourceEvent) redisValues() map[string]any {
-	return map[string]any{
-		"event_id":      e.eventID,
-		"device_id":     e.deviceID,
-		"updated_point": e.updatedPoint,
-		"collected_at":  e.collectedAt,
-		"values":        e.values,
-	}
+	EventID      string          `json:"event_id"`
+	DeviceID     string          `json:"device_id"`
+	UpdatedPoint string          `json:"updated_point"`
+	CollectedAt  string          `json:"collected_at"`
+	Values       json.RawMessage `json:"values"`
+	encoded      []byte
 }
 
 func buildJudgeSourceEvent(
@@ -170,15 +194,20 @@ func buildJudgeSourceEvent(
 		return judgeSourceEvent{}, fmt.Errorf("values: %w", err)
 	}
 	event := judgeSourceEvent{
-		eventID:      eventID,
-		deviceID:     deviceID,
-		updatedPoint: updatedPoint,
-		collectedAt:  collectedAt.UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z"),
-		values:       string(encodedValues),
+		EventID:      eventID,
+		DeviceID:     deviceID,
+		UpdatedPoint: updatedPoint,
+		CollectedAt:  collectedAt.UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z"),
+		Values:       encodedValues,
 	}
-	if err := validateJudgeEnvelopeSize(event, maximumBytes); err != nil {
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		return judgeSourceEvent{}, fmt.Errorf("encode event JSON: %w", err)
+	}
+	if err := validateJudgeEnvelopeSize(encoded, maximumBytes); err != nil {
 		return judgeSourceEvent{}, err
 	}
+	event.encoded = encoded
 	return event, nil
 }
 
@@ -287,20 +316,12 @@ func validateJudgeNumber(value string) error {
 	return nil
 }
 
-func validateJudgeEnvelopeSize(event judgeSourceEvent, maximumBytes int) error {
+func validateJudgeEnvelopeSize(encoded []byte, maximumBytes int) error {
 	if maximumBytes <= 0 || maximumBytes > maximumJudgeEventBytes {
 		maximumBytes = maximumJudgeEventBytes
 	}
-	total := estimatedRedisStreamIDByteLength
-	for key, value := range event.redisValues() {
-		encoded, ok := value.(string)
-		if !ok {
-			return fmt.Errorf("field %q is not a string", key)
-		}
-		total += len(key) + len(encoded)
-		if total > maximumBytes {
-			return fmt.Errorf("event envelope exceeds %d bytes", maximumBytes)
-		}
+	if len(encoded) > maximumBytes {
+		return fmt.Errorf("event envelope exceeds %d bytes", maximumBytes)
 	}
 	return nil
 }

@@ -10,10 +10,14 @@ db = 0
 
 [judge_source]
 enabled = false
-stream = "judge:source"
+channel = "iot:judge:device-events"
 write_timeout_ms = 200
-retry_count = 1
-retry_interval_ms = 20
+worker_count = 8
+queue_size = 2048
+queue_max_bytes = 16777216
+# Per-device accepted but unfinished events, including the in-flight publication.
+device_queue_size = 64
+device_queue_max_bytes = 1048576
 max_event_bytes = 65536
 
 [influx]

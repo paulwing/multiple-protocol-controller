@@ -115,10 +115,6 @@ func (w *historyWriter) writeAsync(point historyPoint) {
 	}
 }
 
-func (w *historyWriter) write(ctx context.Context, point historyPoint) error {
-	return w.writeBatch(ctx, []historyPoint{point})
-}
-
 func (w *historyWriter) stop() {
 	if w == nil || !w.enabled {
 		return

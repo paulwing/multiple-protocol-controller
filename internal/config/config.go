@@ -27,12 +27,15 @@ type RedisCfg struct {
 }
 
 type JudgeSourceCfg struct {
-	Enabled         bool   `mapstructure:"enabled"`
-	Stream          string `mapstructure:"stream"`
-	WriteTimeoutMS  int    `mapstructure:"write_timeout_ms"`
-	RetryCount      int    `mapstructure:"retry_count"`
-	RetryIntervalMS int    `mapstructure:"retry_interval_ms"`
-	MaxEventBytes   int    `mapstructure:"max_event_bytes"`
+	Enabled             bool   `mapstructure:"enabled"`
+	Channel             string `mapstructure:"channel"`
+	WriteTimeoutMS      int    `mapstructure:"write_timeout_ms"`
+	WorkerCount         int    `mapstructure:"worker_count"`
+	QueueSize           int    `mapstructure:"queue_size"`
+	QueueMaxBytes       int    `mapstructure:"queue_max_bytes"`
+	DeviceQueueSize     int    `mapstructure:"device_queue_size"`
+	DeviceQueueMaxBytes int    `mapstructure:"device_queue_max_bytes"`
+	MaxEventBytes       int    `mapstructure:"max_event_bytes"`
 }
 
 type InfluxCfg struct {
