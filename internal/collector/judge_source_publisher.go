@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"multiple-protocol-controller/pkg/logger"
 )
 
 var errJudgeSourceNoSubscribers = errors.New("Redis accepted the publication but Judge has no active subscriber")
@@ -60,9 +62,10 @@ func newJudgeSourcePublisher(
 	}
 	// Log I/O has its own fixed worker and is not part of the publication drain.
 	// A blocked sink must not stall collection, Redis publication or publisher.stop.
+	failureLogger := logger.Log
 	go func() {
 		defer close(publisher.failureLogDone)
-		publisher.failureLog.run(ctx)
+		publisher.failureLog.run(ctx, failureLogger)
 	}()
 	for range config.workerCount {
 		publisher.done.Add(1)
@@ -120,6 +123,10 @@ func (publisher *judgeSourcePublisher) enqueue(event judgeSourceEvent) bool {
 		publisher.readyDevices <- publication.deviceID
 	}
 	publisher.queueMu.Unlock()
+	publisher.failureLog.success(
+		"SOURCE_QUEUE_FULL", "SOURCE_QUEUE_BYTES_FULL",
+		"SOURCE_DEVICE_QUEUE_FULL", "SOURCE_DEVICE_QUEUE_BYTES_FULL",
+	)
 	return true
 }
 
@@ -147,6 +154,12 @@ func (publisher *judgeSourcePublisher) runWorker() {
 			}
 			if err != nil {
 				publisher.logFailure(classifyJudgeSourceError(err))
+			} else {
+				publisher.failureLog.success(
+					"SOURCE_NO_SUBSCRIBERS", "REDIS_TIMEOUT", "REDIS_MEMORY_EXHAUSTED",
+					"REDIS_READONLY", "REDIS_PERSISTENCE_ERROR", "REDIS_POOL_EXHAUSTED",
+					"REDIS_AUTH_FAILED", "REDIS_KEY_TYPE_INVALID", "REDIS_UNAVAILABLE", "REDIS_WRITE_FAILED",
+				)
 			}
 		}
 	}

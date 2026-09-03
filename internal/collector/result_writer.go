@@ -105,7 +105,7 @@ func (w *deviceResultWriter) initializeJudgePublisher(client judgeSourceRedis) {
 	if logContext == nil {
 		logContext = context.Background()
 	}
-	go w.judgeFailureLog.run(logContext)
+	go w.judgeFailureLog.run(logContext, logger.Log)
 }
 
 // RefreshResultWriter rebuilds the in-memory snapshot cache using the latest IoT configuration.
@@ -369,6 +369,7 @@ func (w *deviceResultWriter) recordValue(
 		} else if w.judgePublisher == nil {
 			w.logJudgeSourceFailure("SOURCE_PUBLISHER_UNAVAILABLE")
 		} else {
+			w.judgePublisher.failureLog.success("SOURCE_EVENT_INVALID", "SOURCE_PUBLISHER_UNAVAILABLE")
 			w.judgePublisher.enqueue(event)
 		}
 	}
