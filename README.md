@@ -219,7 +219,7 @@ Judge client construction does not connect or `PING`; publisher workers connect 
 
 Queue full, byte limit, timeout, Redis error, zero subscribers, invalid payload, or oversize payload ends the current Judge event's attempt without retry. Failure reporting on collecting and publishing callers only increments fixed-size atomic counters. One independent background worker attempts to flush summaries every second, with `reason_code` and `failure_count`; it never retains event payloads or builds a log-event queue. Zero subscribers has the distinct code `SOURCE_NO_SUBSCRIBERS`. A slow log sink delays these summaries, not the Judge failure-reporting caller or publisher shutdown; final pending counters may be lost on shutdown. This does not make existing snapshot, history, or protocol logs asynchronous. Snapshot and history behavior is unchanged, and MPC publication-pressure UI work remains deferred.
 
-See [Judge publication and collection boundary review](docs/代码审查/Judge发布分支与采集链路边界审查.md) for remaining publisher issues, acquisition side effects, and pre-Judge behavior.
+The Judge publication and collection boundary review is not part of this repository (the referenced path `docs/代码审查/` does not exist here); publisher, acquisition-side-effect and pre-Judge issues are tracked outside this repo. The publication contract that does live here is [docs/对接文档/MPC规则事件发布.md](docs/对接文档/MPC规则事件发布.md).
 
 Pub/Sub is at-most-once: it has no Redis key, backlog, replay, acknowledgement, or offline retention. MPC never writes a fallback Stream, file, or database queue. Judge downtime or a broken subscription therefore loses messages during the gap by design.
 
