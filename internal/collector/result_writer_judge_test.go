@@ -16,29 +16,46 @@ func TestRecordPublishesNestedFiveFieldJSONAndKeepsSnapshotIndependent(t *testin
 	writer, snapshots, publications := newJudgeEnabledResultWriter(t)
 	device := judgeTestDevice("device-1", "serial-1")
 
-	if err := writer.record(device, config.ModbusParam{Identify: "temperature"}, 23.5); err != nil {
-		t.Fatalf("record() error = %v", err)
+	for _, update := range []struct {
+		point string
+		value float64
+	}{{"temperature", 23.5}, {"humidity", 50}, {"temperature", 99}} {
+		if err := writer.record(device, config.ModbusParam{Identify: update.point}, update.value); err != nil {
+			t.Fatalf("record() error = %v", err)
+		}
+		if got := snapshots.singleKey(t); got != "device:data:device-1" {
+			t.Fatalf("snapshot key = %q", got)
+		}
 	}
-	if got := snapshots.singleKey(t); got != "device:data:device-1" {
-		t.Fatalf("snapshot key = %q", got)
-	}
-	published := publications.next(t)
-	if published.channel != defaultJudgeSourceChannel {
-		t.Fatalf("channel = %q", published.channel)
-	}
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(published.payload, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if len(payload) != 5 {
-		t.Fatalf("top-level field count = %d, payload=%s", len(payload), published.payload)
-	}
-	var values map[string]any
-	if err := json.Unmarshal(payload["values"], &values); err != nil {
-		t.Fatalf("values is not a nested JSON object: %v", err)
-	}
-	if values["temperature"] != 23.5 {
-		t.Fatalf("values = %#v", values)
+	// Later updates must not change the full value snapshot queued for an earlier event.
+	for _, want := range []map[string]any{
+		{"temperature": 23.5},
+		{"temperature": 23.5, "humidity": float64(50)},
+		{"temperature": float64(99), "humidity": float64(50)},
+	} {
+		published := publications.next(t)
+		if published.channel != defaultJudgeSourceChannel {
+			t.Fatalf("channel = %q", published.channel)
+		}
+		var payload map[string]json.RawMessage
+		if err := json.Unmarshal(published.payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(payload) != 5 {
+			t.Fatalf("top-level field count = %d, payload=%s", len(payload), published.payload)
+		}
+		var values map[string]any
+		if err := json.Unmarshal(payload["values"], &values); err != nil {
+			t.Fatalf("values is not a nested JSON object: %v", err)
+		}
+		if len(values) != len(want) {
+			t.Fatalf("values = %#v, want %#v", values, want)
+		}
+		for key, expected := range want {
+			if values[key] != expected {
+				t.Fatalf("values = %#v, want %#v", values, want)
+			}
+		}
 	}
 }
 

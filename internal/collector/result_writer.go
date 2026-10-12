@@ -361,7 +361,7 @@ func (w *deviceResultWriter) recordValue(
 		if sourceErr == nil {
 			event, sourceErr = buildJudgeSourceEvent(
 				eventID, device.Config.ID, updatedPoint, time.UnixMilli(result.Timestamp),
-				snapshot.cloneValues(), w.judgeSource.maximumEventBytes,
+				result.CurrentValue, w.judgeSource.maximumEventBytes,
 			)
 		}
 		if sourceErr != nil {
@@ -446,14 +446,6 @@ func (d *deviceSnapshot) cloneResult() deviceResult {
 		res.PointName[k] = v
 	}
 	return res
-}
-
-func (d *deviceSnapshot) cloneValues() map[string]any {
-	result := make(map[string]any, len(d.values))
-	for key, value := range d.values {
-		result[key] = value
-	}
-	return result
 }
 
 func (w *deviceResultWriter) logJudgeSourceFailure(reasonCode string) {
