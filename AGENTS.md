@@ -50,14 +50,16 @@ func GetProtocol(name string) (Protocol, error)
 ```
 
 Existing implementations:
+
 - `internal/protocol/modbusRtu/` - Modbus RTU/TCP support (registered as "MODBUS_RTU")
 - `internal/protocol/opcua/` - OPC UA support (registered as "OPCUA")
 - `internal/protocol/mqtt/` - MQTT support (registered as "MQTT")
-- `internal/protocol/bacnet/` - BACnet/IP support (registered as "BACNET")
+- `internal/protocol/bacnet/` - BACnet/IP support (registered as "bacnet", normalized to "BACNET")
 
 Protocol names are normalized with `protocol.NormalizeName` in the protocol factory, so each protocol should register only one name and reuse that helper for protocol-name comparisons.
 
 To add a new protocol:
+
 1. Create `internal/protocol/<protocol>/` package
 2. Implement the `Protocol` interface
 3. Register in `init()` function
@@ -72,13 +74,15 @@ To add a new protocol:
 ### Configuration Model
 
 Device configuration in `internal/config/device.go`:
-- `Protocol` field specifies which protocol to use ("ModbusRtu", "OPCUA", "MQTT", "BACNET", etc.)
+
+- `Protocol` field specifies which protocol to use ("MODBUS_RTU", "OPCUA", "MQTT", "BACNET", etc.)
 - `Properties` contains data points with protocol-specific `Protocol` config
 - `Params` contains protocol-specific parameters (e.g., Modbus slaveID, MQTT client options, BACnet device instance)
 
 #### MQTT Device Configuration
 
 MQTT uses `gatewayInfo` to store broker address:
+
 - `gatewayInfo.ip` - MQTT broker host
 - `gatewayInfo.port` - MQTT broker port (default 1883)
 - `username`/`password` - Authentication (optional)
@@ -122,49 +126,31 @@ The system uses `config.IotCfgStore` (atomic.Value) to store the current device 
 | `set_device_current_value` | Control command input |
 | `device_current_value_response` | Control command result |
 | `CFG_CHANGE` | Configuration change notification |
+| `iot:judge:device-events` | Judge Source Pub/Sub; see the publication contract below |
 | `server:status:mpc` | Service heartbeat |
 
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
+## Judge 协作入口
 
-This project is indexed by GitNexus as **multiple-protocol-controller** (1364 symbols, 3832 relationships, 119 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+- 配置、消息格式和失败处理：[MPC 规则事件发布](docs/对接文档/MPC规则事件发布.md)。
+- 对采集、存储的影响：[Judge 发布与采集链路边界](docs/代码审查/Judge发布分支与采集链路边界审查.md)。
+- 跨仓配套版本：[部署约定](../documents/integration/server-deployment-guide.md#release-versions)。只检出 MPC 时先核对本仓文档；缺少相邻文档或配套提交时说明缺口，不默认各仓当前分支互相兼容。
 
-> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
+| 代码入口 | 职责 |
+| --- | --- |
+| `internal/collector/result_writer.go` | 采集快照、事件构造入口、实时与历史写入顺序 |
+| `internal/collector/judge_source.go` | 五字段消息校验、编码及配置归一化 |
+| `internal/collector/judge_source_publisher.go` | 单设备顺序、队列容量及 Redis 发布 |
+| `internal/collector/judge_source_failure_log.go` | 失败计数、后台汇总及恢复日志 |
+| `internal/config/`、`internal/store/` | 配置读取及独立发布客户端 |
 
-## Always Do
+相关包验证：
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "master"})`.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
-- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
+```sh
+go test -count=1 ./internal/collector ./internal/config ./internal/store
+```
 
-## Never Do
+需要全仓回归时执行 `go test -count=1 ./...`。按实际改动选择检查；单测不能代替真设备、实际 Redis 和 Judge 联调。
 
-- NEVER edit a function, class, or method without first running `impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
-- NEVER commit changes without running `detect_changes()` to check affected scope.
+## 可选代码索引
 
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/multiple-protocol-controller/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/multiple-protocol-controller/clusters` | All functional areas |
-| `gitnexus://repo/multiple-protocol-controller/processes` | All execution flows |
-| `gitnexus://repo/multiple-protocol-controller/process/{name}` | Step-by-step execution trace |
-
-## CLI
-
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-
-<!-- gitnexus:end -->
+GitNexus 只用于按需导航，工具可用且索引与所查代码一致时再使用。工具缺失或索引陈旧时直接查源码、测试和 Git 差异；不因普通文档整理自动安装工具、重建索引或逐个符号执行分析。影响范围和验证以实际改动为准。
