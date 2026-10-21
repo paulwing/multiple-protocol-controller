@@ -473,11 +473,19 @@ func buildBacnetApplicationValue(value interface{}) ([]byte, error) {
 		return buf, nil
 	case int:
 		return buildSignedValue(int64(v))
+	case int8:
+		return buildSignedValue(int64(v))
+	case int16:
+		return buildSignedValue(int64(v))
 	case int32:
 		return buildSignedValue(int64(v))
 	case int64:
 		return buildSignedValue(v)
 	case uint:
+		return buildUnsignedValue(uint64(v))
+	case uint8:
+		return buildUnsignedValue(uint64(v))
+	case uint16:
 		return buildUnsignedValue(uint64(v))
 	case uint32:
 		return buildUnsignedValue(uint64(v))

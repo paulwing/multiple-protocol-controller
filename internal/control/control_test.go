@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"testing"
@@ -12,22 +13,51 @@ import (
 
 func TestControlValuesEqualNormalizesSupportedPropertyTypes(t *testing.T) {
 	tests := []struct {
-		name     string
-		target   any
-		actual   any
-		dataType string
-		want     bool
+		name       string
+		target     any
+		actual     any
+		targetType string
+		actualType string
+		want       bool
 	}{
-		{name: "bool", target: "true", actual: true, dataType: "bool", want: true},
-		{name: "enum", target: float64(2), actual: int32(2), dataType: "enum", want: true},
-		{name: "float tolerance", target: 12.5, actual: float32(12.500001), dataType: "float", want: true},
-		{name: "string mismatch", target: "open", actual: "closed", dataType: "string", want: false},
+		{name: "bool", target: "true", actual: true, targetType: "bool", actualType: "bool", want: true},
+		{name: "enum", target: float64(2), actual: int32(2), targetType: "enum", actualType: "enum", want: true},
+		{name: "float tolerance", target: 12.5, actual: float32(12.500001), targetType: "float", actualType: "float", want: true},
+		{name: "string mismatch", target: "open", actual: "closed", targetType: "string", actualType: "string", want: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := controlValuesEqual(tt.target, tt.actual, tt.dataType); got != tt.want {
-				t.Fatalf("controlValuesEqual(%v, %v, %q) = %t, want %t", tt.target, tt.actual, tt.dataType, got, tt.want)
+			if got := controlValuesEqual(tt.target, tt.actual, tt.targetType, tt.actualType); got != tt.want {
+				t.Fatalf("controlValuesEqual(%v, %v, %q, %q) = %t, want %t", tt.target, tt.actual, tt.targetType, tt.actualType, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestControlValuesEqualUsesWriteAndReadTypesIndependently(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     any
+		actual     any
+		targetType string
+		actualType string
+		want       bool
+	}{
+		{name: "int16 written, uint16 read", target: int16(300), actual: uint16(300), targetType: "int16", actualType: "uint16", want: true},
+		{name: "int16 written, uint16 differs", target: int16(300), actual: uint16(301), targetType: "int16", actualType: "uint16", want: false},
+		{name: "int64 exact", target: int64(9007199254740993), actual: int64(9007199254740993), targetType: "int64", actualType: "int64", want: true},
+		{name: "int64 one off", target: int64(9007199254740993), actual: int64(9007199254740992), targetType: "int64", actualType: "int64", want: false},
+		{name: "uint64 max exact", target: uint64(1<<64 - 1), actual: uint64(1<<64 - 1), targetType: "uint64", actualType: "uint64", want: true},
+		{name: "int written, float read with tolerance", target: int64(1), actual: float32(1.0000001), targetType: "int64", actualType: "float32", want: true},
+		{name: "int64 beyond float precision is not verified by a float read", target: int64(9007199254740993), actual: float64(9007199254740992), targetType: "int64", actualType: "float64", want: false},
+		{name: "legacy int keeps tolerance", target: 1.9, actual: 1.9000001, targetType: "int", actualType: "int", want: true},
+		{name: "canonical int16 is exact", target: int16(1), actual: int16(2), targetType: "int16", actualType: "int16", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := controlValuesEqual(tt.target, tt.actual, tt.targetType, tt.actualType); got != tt.want {
+				t.Fatalf("controlValuesEqual = %t, want %t", got, tt.want)
 			}
 		})
 	}
@@ -39,7 +69,7 @@ func TestVerifyControlReadbackRetriesUntilTargetValueIsObserved(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	result := verifyControlReadback(ctx, true, "bool", 0, func(context.Context) (any, error) {
+	result := verifyControlReadback(ctx, true, "bool", true, "bool", true, 0, func(context.Context) (any, error) {
 		value := values[attempts]
 		attempts++
 		return value, nil
@@ -57,7 +87,7 @@ func TestVerifyControlReadbackReportsTimeoutWhenValueNeverMatches(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
 	defer cancel()
 
-	result := verifyControlReadback(ctx, true, "bool", time.Millisecond, func(context.Context) (any, error) {
+	result := verifyControlReadback(ctx, true, "bool", true, "bool", true, time.Millisecond, func(context.Context) (any, error) {
 		return false, nil
 	})
 
@@ -130,3 +160,36 @@ func (a stubAddr) Network() string { return string(a) }
 func (a stubAddr) String() string  { return string(a) }
 
 var _ net.Conn = (*failingAckConn)(nil)
+
+// TestLegacyNonExplicitCommandValueKeepsOldSemantics covers old properties
+// whose type name is also a canonical data type: without an explicit dataType
+// the original truncating conversion must remain.
+func TestLegacyNonExplicitCommandValueKeepsOldSemantics(t *testing.T) {
+	for _, dataType := range []string{"int32", "int64"} {
+		value, err := normalizeCommandValue(dataType, false, json.Number("1.9"))
+		if err != nil {
+			t.Fatalf("legacy normalizeCommandValue(%s) error = %v", dataType, err)
+		}
+		if got, ok := value.(int64); !ok || got != 1 {
+			t.Fatalf("legacy %s value = %#v, want truncated 1", dataType, value)
+		}
+	}
+	if _, err := normalizeCommandValue("int32", true, json.Number("1.9")); err == nil {
+		t.Fatal("explicit int32 must reject a fractional value")
+	}
+}
+
+// TestControlValuesEqualUsesExplicitMarkerForLegacyFallback shows that the
+// comparison only falls back to old tolerance semantics when both sides
+// inherited their types.
+func TestControlValuesEqualUsesExplicitMarkerForLegacyFallback(t *testing.T) {
+	if !controlValuesEqualWithExplicit(5, 5.0000001, "int", false, "float", false) {
+		t.Fatal("two inherited legacy types must keep the old tolerance comparison")
+	}
+	if controlValuesEqualWithExplicit(uint64(9007199254740993), float64(9007199254740992), "uint64", true, "double", false) {
+		t.Fatal("an explicit integer write must not verify a rounded inherited float read")
+	}
+	if controlValuesEqualWithExplicit(int64(5), int32(5), "int32", false, "int32", false) {
+		t.Fatal("two inherited canonical-looking names must keep the old DeepEqual comparison")
+	}
+}

@@ -15,12 +15,13 @@ type Protocol interface {
 
 // CommandMessage 承载控制指令下发所需的上下文信息.
 type CommandMessage struct {
-	DeviceAddress uint64
-	FunctionCode  int
-	Address       uint64
-	DataType      string
-	Endian        string
-	Value         interface{}
+	DeviceAddress    uint64
+	FunctionCode     int
+	Address          uint64
+	DataType         string
+	DataTypeExplicit bool // dataType 来自点位显式配置；false 表示沿用旧属性类型语义
+	Endian           string
+	Value            interface{}
 }
 
 var registry = map[string]Protocol{}

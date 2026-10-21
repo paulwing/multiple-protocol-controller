@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"net"
@@ -166,6 +167,12 @@ func CoerceBool(val interface{}) (bool, error) {
 		return v != 0, nil
 	case float64:
 		return v != 0, nil
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return false, err
+		}
+		return f != 0, nil
 	case string:
 		s := strings.TrimSpace(strings.ToLower(v))
 		switch s {
@@ -210,6 +217,14 @@ func CoerceInt64(val interface{}) (int64, error) {
 		return int64(v), nil
 	case float64:
 		return int64(v), nil
+	case json.Number:
+		// Preserve the behaviour the old float64 JSON decode produced: a
+		// fractional or exponent value was truncated toward zero.
+		f, err := v.Float64()
+		if err != nil {
+			return 0, err
+		}
+		return int64(f), nil
 	case string:
 		if strings.Contains(v, ".") {
 			f, err := strconv.ParseFloat(v, 64)
@@ -279,6 +294,15 @@ func CoerceUint64(val interface{}) (uint64, error) {
 			return 0, fmt.Errorf("negative float64 cannot convert to uint")
 		}
 		return uint64(v), nil
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return 0, err
+		}
+		if f < 0 {
+			return 0, fmt.Errorf("negative number cannot convert to uint")
+		}
+		return uint64(f), nil
 	case string:
 		if strings.Contains(v, ".") {
 			f, err := strconv.ParseFloat(v, 64)
@@ -322,6 +346,8 @@ func CoerceFloat64(val interface{}) (float64, error) {
 		return float64(v), nil
 	case float64:
 		return v, nil
+	case json.Number:
+		return v.Float64()
 	case string:
 		return strconv.ParseFloat(v, 64)
 	default:
@@ -337,9 +363,175 @@ func CoerceFloat32(val interface{}) (float32, error) {
 	return float32(f), nil
 }
 
+// maxExactFloatInteger is the largest integer a float64 represents without
+// losing precision. Anything above it must arrive as an integer or text.
+const maxExactFloatInteger = 1 << 53
+
+// CoerceExactInt64 converts without truncation. Fractional values, exponent
+// notation and floats beyond the exact integer range are rejected, so an int64
+// point never silently receives a rounded number.
+func CoerceExactInt64(val interface{}) (int64, error) {
+	switch v := val.(type) {
+	case int:
+		return int64(v), nil
+	case int8:
+		return int64(v), nil
+	case int16:
+		return int64(v), nil
+	case int32:
+		return int64(v), nil
+	case int64:
+		return v, nil
+	case uint:
+		if uint64(v) > math.MaxInt64 {
+			return 0, fmt.Errorf("%d exceeds int64 range", v)
+		}
+		return int64(v), nil
+	case uint8:
+		return int64(v), nil
+	case uint16:
+		return int64(v), nil
+	case uint32:
+		return int64(v), nil
+	case uint64:
+		if v > math.MaxInt64 {
+			return 0, fmt.Errorf("%d exceeds int64 range", v)
+		}
+		return int64(v), nil
+	case float32:
+		return exactInt64FromFloat(float64(v))
+	case float64:
+		return exactInt64FromFloat(v)
+	case json.Number:
+		return exactInt64FromText(v.String())
+	case string:
+		return exactInt64FromText(v)
+	default:
+		return 0, fmt.Errorf("unsupported int conversion from %T", val)
+	}
+}
+
+func exactInt64FromFloat(f float64) (int64, error) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("%v is not an integer", f)
+	}
+	if f != math.Trunc(f) {
+		return 0, fmt.Errorf("%v is not an integer", f)
+	}
+	if math.Abs(f) > maxExactFloatInteger {
+		return 0, fmt.Errorf("%v exceeds the exact integer range; send it as an integer", f)
+	}
+	return int64(f), nil
+}
+
+func exactInt64FromText(text string) (int64, error) {
+	if strings.ContainsAny(text, ".eE") {
+		return 0, fmt.Errorf("%q is not an integer", text)
+	}
+	value, err := strconv.ParseInt(strings.TrimSpace(text), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not an integer: %w", text, err)
+	}
+	return value, nil
+}
+
+// CoerceExactUint64 is the unsigned counterpart of CoerceExactInt64.
+func CoerceExactUint64(val interface{}) (uint64, error) {
+	switch v := val.(type) {
+	case int:
+		if v < 0 {
+			return 0, fmt.Errorf("negative int cannot convert to uint")
+		}
+		return uint64(v), nil
+	case int8:
+		if v < 0 {
+			return 0, fmt.Errorf("negative int8 cannot convert to uint")
+		}
+		return uint64(v), nil
+	case int16:
+		if v < 0 {
+			return 0, fmt.Errorf("negative int16 cannot convert to uint")
+		}
+		return uint64(v), nil
+	case int32:
+		if v < 0 {
+			return 0, fmt.Errorf("negative int32 cannot convert to uint")
+		}
+		return uint64(v), nil
+	case int64:
+		if v < 0 {
+			return 0, fmt.Errorf("negative int64 cannot convert to uint")
+		}
+		return uint64(v), nil
+	case uint:
+		return uint64(v), nil
+	case uint8:
+		return uint64(v), nil
+	case uint16:
+		return uint64(v), nil
+	case uint32:
+		return uint64(v), nil
+	case uint64:
+		return v, nil
+	case float32:
+		return exactUint64FromFloat(float64(v))
+	case float64:
+		return exactUint64FromFloat(v)
+	case json.Number:
+		return exactUint64FromText(v.String())
+	case string:
+		return exactUint64FromText(v)
+	default:
+		return 0, fmt.Errorf("unsupported uint conversion from %T", val)
+	}
+}
+
+func exactUint64FromFloat(f float64) (uint64, error) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("%v is not an integer", f)
+	}
+	if f < 0 {
+		return 0, fmt.Errorf("negative value %v cannot convert to uint", f)
+	}
+	if f != math.Trunc(f) {
+		return 0, fmt.Errorf("%v is not an integer", f)
+	}
+	if f > maxExactFloatInteger {
+		return 0, fmt.Errorf("%v exceeds the exact integer range; send it as an integer", f)
+	}
+	return uint64(f), nil
+}
+
+func exactUint64FromText(text string) (uint64, error) {
+	if strings.ContainsAny(text, ".eE") {
+		return 0, fmt.Errorf("%q is not an integer", text)
+	}
+	value, err := strconv.ParseUint(strings.TrimSpace(text), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not an integer: %w", text, err)
+	}
+	return value, nil
+}
+
 func CoerceString(val interface{}) string {
 	if v, ok := val.(string); ok {
 		return v
 	}
 	return fmt.Sprint(val)
+}
+
+// LegacyJSONNumberValue restores the value shape the old command decoder
+// produced before UseNumber was enabled. Non-explicit commands must keep the
+// historical float64 semantics; explicit point data types are the only ones
+// allowed to see an exact json.Number.
+func LegacyJSONNumberValue(val interface{}) interface{} {
+	number, ok := val.(json.Number)
+	if !ok {
+		return val
+	}
+	parsed, err := number.Float64()
+	if err != nil {
+		return val
+	}
+	return parsed
 }

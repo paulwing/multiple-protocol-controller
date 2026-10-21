@@ -143,7 +143,11 @@ func (w *opcuaWorker) collectOnce() {
 			continue
 		}
 		raw := val.Value.Value()
-		converted, err := opcuaProtocol.NormalizeValue(raw, param.DataType)
+		normalize := opcuaProtocol.NormalizeValue
+		if param.DataTypeExplicit {
+			normalize = opcuaProtocol.NormalizeValueExplicit
+		}
+		converted, err := normalize(raw, param.DataType)
 		if err != nil {
 			logInfo("opcua value normalize failed",
 				zap.String("deviceSerial", w.spec.Device.Config.SerialNumber),

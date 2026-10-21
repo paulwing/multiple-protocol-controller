@@ -43,11 +43,12 @@ type gatewayMeta struct {
 }
 
 type gatewayConn struct {
-	mu        sync.Mutex
-	meta      gatewayMeta
-	conn      net.Conn
-	lastUsed  time.Time
-	lastError error
+	mu          sync.Mutex
+	meta        gatewayMeta
+	conn        net.Conn
+	lastUsed    time.Time
+	lastError   error
+	keepAliveOK bool
 }
 
 // Manager maintains TCP connections keyed by gateway endpoint while devices map into it.
@@ -68,6 +69,16 @@ type Manager struct {
 
 	guardMu       sync.Mutex
 	gatewayGuards map[string]*gatewayGuard
+
+	// 纯网关（deviceType=1）独立健康检查。网关状态与子设备采集结果无关，
+	// 只依据端点连接本身；targets 按 IP:port 分组，同端点的多个设备 ID 共享一次检查。
+	gatewayTargets      []GatewayTarget
+	configGeneration    uint64
+	healthMu            sync.Mutex
+	dialFailures        map[string]int
+	keepAliveLogAt      map[string]time.Time
+	inspectSocket       func(net.Conn) (socketVerdict, error)
+	setGatewayKeepAlive func(*net.TCPConn) error
 }
 
 // Option customises the Manager instance during construction.
@@ -180,14 +191,18 @@ func NewManager(ctx context.Context, opts ...Option) *Manager {
 	mCtx, cancel := context.WithCancel(ctx)
 
 	m := &Manager{
-		ctx:           mCtx,
-		cancel:        cancel,
-		dialer:        net.Dialer{KeepAlive: defaultKeepAlive},
-		dialTimeout:   defaultDialTimeout,
-		devices:       make(map[string]deviceMeta),
-		gateways:      make(map[string]gatewayMeta),
-		conns:         make(map[string]*gatewayConn),
-		gatewayGuards: make(map[string]*gatewayGuard),
+		ctx:                 mCtx,
+		cancel:              cancel,
+		dialer:              net.Dialer{KeepAlive: defaultKeepAlive},
+		dialTimeout:         defaultDialTimeout,
+		devices:             make(map[string]deviceMeta),
+		gateways:            make(map[string]gatewayMeta),
+		conns:               make(map[string]*gatewayConn),
+		gatewayGuards:       make(map[string]*gatewayGuard),
+		dialFailures:        make(map[string]int),
+		keepAliveLogAt:      make(map[string]time.Time),
+		inspectSocket:       inspectSocketPlatform,
+		setGatewayKeepAlive: setGatewayKeepAliveConfig,
 	}
 
 	for _, opt := range opts {
@@ -216,6 +231,8 @@ func (m *Manager) ApplyConfig(cfg config.IotCfgType) error {
 	newDevices, newGateways := collectDeviceMeta(cfg)
 
 	m.mu.Lock()
+	// 代次用于拒绝旧配置下发起的拨号/检查结果覆盖新配置的连接与状态。
+	m.configGeneration++
 
 	for key, entry := range m.conns {
 		meta, ok := newGateways[key]
@@ -237,14 +254,31 @@ func (m *Manager) ApplyConfig(cfg config.IotCfgType) error {
 	}
 	m.devices = newDevices
 	m.gateways = newGateways
+	m.gatewayTargets = buildGatewayTargets(cfg)
+	targetKeys := make(map[string]struct{}, len(m.gatewayTargets))
+	for _, target := range m.gatewayTargets {
+		targetKeys[target.Key] = struct{}{}
+	}
 
 	pendingDial := make([]gatewayMeta, 0, len(newGateways))
 	for _, meta := range newGateways {
+		// 纯网关端点由健康检查独占拨号；避免 preDial 与健康检查/业务拨号并发建立额外连接。
+		if _, isPureGatewayEndpoint := targetKeys[meta.Key]; isPureGatewayEndpoint {
+			continue
+		}
 		pendingDial = append(pendingDial, meta)
 	}
 	m.mu.Unlock()
 
-	if added == 0 {
+	m.healthMu.Lock()
+	for key := range m.dialFailures {
+		if _, ok := targetKeys[key]; !ok {
+			delete(m.dialFailures, key)
+		}
+	}
+	m.healthMu.Unlock()
+
+	if added == 0 || len(pendingDial) == 0 {
 		return nil
 	}
 
@@ -261,14 +295,19 @@ func (m *Manager) waitForShutdown() {
 func (m *Manager) Close() error {
 	m.closeOnce.Do(func() {
 		m.mu.Lock()
-		defer m.mu.Unlock()
 		for _, conn := range m.conns {
 			_ = conn.close()
 		}
 		m.conns = nil
 		m.devices = nil
 		m.gateways = nil
+		m.gatewayTargets = nil
+		m.mu.Unlock()
+
+		m.guardMu.Lock()
 		m.gatewayGuards = nil
+		m.guardMu.Unlock()
+
 		m.cancel()
 	})
 	return m.closeErr
@@ -339,6 +378,7 @@ func (m *Manager) ResetConnection(deviceSerial string) {
 	if entry, ok := m.conns[gateway.Key]; ok {
 		_ = entry.close()
 		entry.conn = nil
+		entry.keepAliveOK = false
 	}
 }
 
@@ -362,19 +402,12 @@ func (m *Manager) releaseGatewayConn(gatewayKey string) {
 }
 
 func (m *Manager) ensureGatewayConn(ctx context.Context, key string) (net.Conn, error) {
-	m.mu.RLock()
-	entry, ok := m.conns[key]
-	m.mu.RUnlock()
-
+	// 统一锁顺序：m.mu → entry.mu。
+	// 这里在进入 entry.mu 前一次性取齐 entry/meta/纯网关标记，
+	// 避免持有 entry.mu 时再取 m.mu（ApplyConfig/Close/storeGatewayConn 是反向顺序）。
+	entry, pureGateway, ok := m.gatewayPoolEntry(key)
 	if !ok {
-		var meta gatewayMeta
-		if meta, ok = m.gateways[key]; !ok {
-			return nil, fmt.Errorf("gateway %s not registered in tcp pool", key)
-		}
-		entry = &gatewayConn{meta: meta}
-		m.mu.Lock()
-		m.conns[key] = entry
-		m.mu.Unlock()
+		return nil, fmt.Errorf("gateway %s not registered in tcp pool", key)
 	}
 
 	entry.mu.Lock()
@@ -399,10 +432,54 @@ func (m *Manager) ensureGatewayConn(ctx context.Context, key string) (net.Conn, 
 		entry.lastError = err
 		return nil, err
 	}
+	// 受控 keepalive 只作用于本轮纯网关端点；type0/type2 及其它协议保持旧行为。
+	entry.keepAliveOK = false
+	if pureGateway {
+		keepAliveOK, keepAliveErr := m.applyGatewayKeepAlive(conn)
+		if keepAliveErr != nil {
+			// 不阻断采集，但记录并标记该连接不能作为在线证据；健康检查会重建它。
+			m.logGatewayKeepAliveFailure(key, keepAliveErr)
+		} else {
+			entry.keepAliveOK = keepAliveOK
+		}
+	}
 	entry.conn = conn
 	entry.lastUsed = time.Now()
 	entry.lastError = nil
 	return conn, nil
+}
+
+// gatewayPoolEntry 在 m.mu 保护下取齐连接条目、纯网关标记与端点元数据。
+// 返回值中的 entry 可能为 nil 且 ok 为 true（端点存在但尚未建条目），此时由调用方创建。
+func (m *Manager) gatewayPoolEntry(key string) (*gatewayConn, bool, bool) {
+	m.mu.RLock()
+	entry := m.conns[key]
+	meta, hasMeta := m.gateways[key]
+	pure := m.isPureGatewayEndpointLocked(key)
+	m.mu.RUnlock()
+
+	if !hasMeta {
+		return nil, false, false
+	}
+	if entry != nil {
+		return entry, pure, true
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// 配置可能在两次取锁之间刷新；必须在写锁内重新校验端点与纯网关标记，
+	// 避免为已移除的端点创建连接条目，或把 keepalive 误用到已变成 type0/2 的端点。
+	meta, hasMeta = m.gateways[key]
+	if !hasMeta || m.conns == nil {
+		return nil, false, false
+	}
+	pure = m.isPureGatewayEndpointLocked(key)
+	if existing := m.conns[key]; existing != nil {
+		return existing, pure, true
+	}
+	entry = &gatewayConn{meta: meta}
+	m.conns[key] = entry
+	return entry, pure, true
 }
 
 func (m *Manager) preDialGateways(gateways []gatewayMeta) {
@@ -444,6 +521,7 @@ func (dc *gatewayConn) close() error {
 	}
 	err := dc.conn.Close()
 	dc.conn = nil
+	dc.keepAliveOK = false
 	return err
 }
 
@@ -535,6 +613,9 @@ func (m *Manager) getGatewayGuard(key string) *gatewayGuard {
 	defer m.guardMu.Unlock()
 	if guard, ok := m.gatewayGuards[key]; ok {
 		return guard
+	}
+	if m.gatewayGuards == nil {
+		m.gatewayGuards = make(map[string]*gatewayGuard)
 	}
 	guard := &gatewayGuard{}
 	m.gatewayGuards[key] = guard

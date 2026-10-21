@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"multiple-protocol-controller/internal/protocol"
+	"multiple-protocol-controller/internal/protocol/datatypes"
 )
 
 type Mqtt struct{}
@@ -26,9 +27,10 @@ type MqttTopics struct {
 }
 
 type MqttTopicConfig struct {
-	Topic string `json:"topic"`
-	Path  string `json:"path"`
-	Qos   byte   `json:"qos"`
+	Topic    string `json:"topic"`
+	Path     string `json:"path"`
+	Qos      byte   `json:"qos"`
+	DataType string `json:"dataType"` // 线缆数据类型，可选；缺省沿用属性 type
 }
 
 func NewMqtt() *Mqtt { return &Mqtt{} }
@@ -45,10 +47,46 @@ func (m *Mqtt) ParsePropProtocol(raw json.RawMessage) (any, error) {
 	switch strings.ToUpper(strings.TrimSpace(base.Type)) {
 	case "MQTT":
 		var cfg MqttProtocol
-		return &cfg, json.Unmarshal(raw, &cfg)
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return nil, err
+		}
+		if err := validatePointDataTypes(&cfg); err != nil {
+			return nil, err
+		}
+		return &cfg, nil
 	default:
 		return nil, fmt.Errorf("protocol is not MQTT type %q", base.Type)
 	}
+}
+
+func validatePointDataTypes(cfg *MqttProtocol) error {
+	for index := range cfg.Topics.Subscribe {
+		if err := normalizeTopicDataType(&cfg.Topics.Subscribe[index]); err != nil {
+			return fmt.Errorf("mqtt: subscribe topic %d: %w", index, err)
+		}
+	}
+	for index := range cfg.Topics.Publish {
+		if err := normalizeTopicDataType(&cfg.Topics.Publish[index]); err != nil {
+			return fmt.Errorf("mqtt: publish topic %d: %w", index, err)
+		}
+	}
+	return nil
+}
+
+func normalizeTopicDataType(topic *MqttTopicConfig) error {
+	if strings.TrimSpace(topic.DataType) == "" {
+		topic.DataType = ""
+		return nil
+	}
+	canonical, err := datatypes.Canonical(topic.DataType)
+	if err != nil {
+		return err
+	}
+	if !datatypes.SupportsMqtt(canonical) {
+		return fmt.Errorf("unsupported data type %q", canonical)
+	}
+	topic.DataType = canonical
+	return nil
 }
 
 func (m *Mqtt) EncodeCommand(cmd any) ([]byte, error) {

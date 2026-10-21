@@ -353,7 +353,7 @@ func historyPointFromModbus(device config.DeviceRuntime, param config.ModbusPara
 		PropertyName: param.Name,
 		Protocol:     device.Config.Protocol,
 		Unit:         param.Unit,
-		DataType:     param.DataType,
+		DataType:     historyDataType(param.PropertyType, param.DataType),
 		Value:        value,
 		Timestamp:    time.Now(),
 	}
@@ -368,7 +368,7 @@ func historyPointFromOpcua(device config.DeviceRuntime, param config.OpcuaParam,
 		PropertyName: param.Name,
 		Protocol:     device.Config.Protocol,
 		Unit:         param.Unit,
-		DataType:     param.DataType,
+		DataType:     historyDataType(param.PropertyType, param.DataType),
 		Value:        value,
 		Timestamp:    time.Now(),
 	}
@@ -383,7 +383,7 @@ func historyPointFromBacnet(device config.DeviceRuntime, param config.BacnetPara
 		PropertyName: param.Name,
 		Protocol:     device.Config.Protocol,
 		Unit:         param.Unit,
-		DataType:     param.DataType,
+		DataType:     historyDataType(param.PropertyType, param.DataType),
 		Value:        value,
 		Timestamp:    time.Now(),
 	}
@@ -398,7 +398,7 @@ func historyPointFromMqtt(device config.DeviceRuntime, param config.MqttParam, v
 		PropertyName: param.Name,
 		Protocol:     device.Config.Protocol,
 		Unit:         param.Unit,
-		DataType:     param.DataType,
+		DataType:     historyDataType(param.PropertyType, param.DataType),
 		Value:        value,
 		Timestamp:    time.Now(),
 	}
@@ -409,4 +409,15 @@ func fallbackHistoryString(value string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// historyDataType keeps the historical data_type tag tied to the property's
+// business type. The point data type only drives wire decoding; when the
+// property type is unavailable (directly constructed params in tests) the
+// effective data type is the safest existing fallback.
+func historyDataType(propertyType, dataType string) string {
+	if strings.TrimSpace(propertyType) != "" {
+		return propertyType
+	}
+	return dataType
 }

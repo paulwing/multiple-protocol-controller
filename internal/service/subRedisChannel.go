@@ -1,9 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"multiple-protocol-controller/internal/config"
 	"multiple-protocol-controller/internal/control"
 	"multiple-protocol-controller/internal/store"
@@ -21,8 +23,7 @@ func SubRedisChannel(ctx context.Context, redisClient *store.RedisClient, cfg *c
 		config.SetDeviceProperty: func(msg *redis.Message) error {
 			// 参考mpc iot-system-base this.business!.processCommandData(data);
 			fmt.Println("Recv original command data:", msg.Payload)
-			cmdParams := config.Command4MPC{}
-			err := json.Unmarshal([]byte(msg.Payload), &cmdParams)
+			cmdParams, err := decodeCommandPayload([]byte(msg.Payload))
 			if err != nil {
 				logger.Log.Error("device command parse error:", zap.Error(err))
 				return nil
@@ -47,6 +48,22 @@ func SubRedisChannel(ctx context.Context, redisClient *store.RedisClient, cfg *c
 		logger.Log.Error("SubRedisChannel exited with error", zap.Error(err))
 		return err
 	}
+}
+
+// decodeCommandPayload keeps numbers as json.Number so an int64/uint64 point is
+// not rounded through float64 before it reaches the protocol encoder. The
+// trailing-content rejection matches the json.Unmarshal this replaced.
+func decodeCommandPayload(payload []byte) (config.Command4MPC, error) {
+	var command config.Command4MPC
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&command); err != nil {
+		return config.Command4MPC{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return config.Command4MPC{}, fmt.Errorf("unexpected trailing content")
+	}
+	return command, nil
 }
 
 func newCfgChangeHandler(reload func() error) func(msg *redis.Message) error {

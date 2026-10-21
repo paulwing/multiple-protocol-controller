@@ -284,10 +284,16 @@ func quantityForParam(param config.ModbusParam) uint16 {
 	if param.Quantity > 0 {
 		return uint16(param.Quantity)
 	}
-	switch strings.ToLower(param.DataType) {
-	case "int32", "uint32", "float":
+	dt := strings.ToLower(param.DataType)
+	// float32/float64 are point-level names introduced with dataType; old
+	// configurations keep the previous default width.
+	if !param.DataTypeExplicit && (dt == "float32" || dt == "float64") {
+		return 1
+	}
+	switch dt {
+	case "int32", "uint32", "float", "float32":
 		return 2
-	case "double", "uint64", "int64":
+	case "double", "float64", "uint64", "int64":
 		return 4
 	default:
 		return 1
@@ -372,7 +378,12 @@ func decodeRegisterValue(param config.ModbusParam, payload []byte) (interface{},
 	}
 
 	data := applyEndian(payload[:requiredBytes], param.Endian)
-	switch strings.ToLower(param.DataType) {
+	dt := strings.ToLower(param.DataType)
+	// Keep the old fallback result for property types that predate dataType.
+	if !param.DataTypeExplicit && (dt == "float32" || dt == "float64") {
+		return binary.BigEndian.Uint16(data[:2]), nil
+	}
+	switch dt {
 	case "short", "int16":
 		return int16(binary.BigEndian.Uint16(data[:2])), nil
 	case "ushort", "uint16":
@@ -381,10 +392,10 @@ func decodeRegisterValue(param config.ModbusParam, payload []byte) (interface{},
 		return int32(binary.BigEndian.Uint32(data[:4])), nil
 	case "uint32":
 		return binary.BigEndian.Uint32(data[:4]), nil
-	case "float":
+	case "float", "float32":
 		bits := binary.BigEndian.Uint32(data[:4])
 		return math.Float32frombits(bits), nil
-	case "double":
+	case "double", "float64":
 		bits := binary.BigEndian.Uint64(padBytes(data, 8))
 		return math.Float64frombits(bits), nil
 	case "int64":

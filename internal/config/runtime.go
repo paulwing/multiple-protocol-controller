@@ -65,36 +65,40 @@ type DeviceRuntime struct {
 
 // ModbusParam 描述单个采集点。
 type ModbusParam struct {
-	PropertyID   string
-	DeviceID     string
-	SerialNumber string
-	Identify     string
-	Name         string
-	DataType     string
-	FunctionCode int
-	Address      uint64
-	DeviceAddr   uint64
-	Quantity     int
-	Bit          int
-	ReadDisabled bool
-	Unit         string
-	Endian       string
+	PropertyID       string
+	DeviceID         string
+	SerialNumber     string
+	Identify         string
+	Name             string
+	PropertyType     string // 属性业务类型，历史与业务展示使用
+	DataTypeExplicit bool   // dataType 是否由点位显式配置；false 表示回退属性 type
+	DataType         string
+	FunctionCode     int
+	Address          uint64
+	DeviceAddr       uint64
+	Quantity         int
+	Bit              int
+	ReadDisabled     bool
+	Unit             string
+	Endian           string
 }
 
 // ModbusCommand 描述单个控制点。
 type ModbusCommand struct {
-	PropertyID   string
-	DeviceID     string
-	SerialNumber string
-	Identify     string
-	Name         string
-	DataType     string
-	FunctionCode int
-	Address      uint64
-	DeviceAddr   uint64
-	Quantity     int
-	Unit         string
-	Endian       string
+	PropertyID       string
+	DeviceID         string
+	SerialNumber     string
+	Identify         string
+	Name             string
+	PropertyType     string // 属性业务类型，历史与业务展示使用
+	DataTypeExplicit bool   // dataType 是否由点位显式配置；false 表示回退属性 type
+	DataType         string
+	FunctionCode     int
+	Address          uint64
+	DeviceAddr       uint64
+	Quantity         int
+	Unit             string
+	Endian           string
 }
 
 // BacnetParam 描述单个 BACnet 采集点。
@@ -104,6 +108,8 @@ type BacnetParam struct {
 	SerialNumber       string
 	Identify           string
 	Name               string
+	PropertyType       string // 属性业务类型，历史与业务展示使用
+	DataTypeExplicit   bool   // dataType 是否由点位显式配置；false 表示回退属性 type
 	DataType           string
 	ObjectType         string
 	ObjectInstance     uint32
@@ -119,6 +125,8 @@ type BacnetCommand struct {
 	SerialNumber       string
 	Identify           string
 	Name               string
+	PropertyType       string // 属性业务类型，历史与业务展示使用
+	DataTypeExplicit   bool   // dataType 是否由点位显式配置；false 表示回退属性 type
 	DataType           string
 	ObjectType         string
 	ObjectInstance     uint32
@@ -128,58 +136,66 @@ type BacnetCommand struct {
 
 // OpcuaParam 描述单个 OPC UA 采集点。
 type OpcuaParam struct {
-	PropertyID   string
-	DeviceID     string
-	SerialNumber string
-	Identify     string
-	Name         string
-	DataType     string
-	NodeID       string
-	ReadDisabled bool
-	Unit         string
+	PropertyID       string
+	DeviceID         string
+	SerialNumber     string
+	Identify         string
+	Name             string
+	PropertyType     string // 属性业务类型，历史与业务展示使用
+	DataTypeExplicit bool   // dataType 是否由点位显式配置；false 表示回退属性 type
+	DataType         string
+	NodeID           string
+	ReadDisabled     bool
+	Unit             string
 }
 
 // OpcuaCommand 描述单个 OPC UA 控制点。
 type OpcuaCommand struct {
-	PropertyID   string
-	DeviceID     string
-	SerialNumber string
-	Identify     string
-	Name         string
-	DataType     string
-	NodeID       string
-	Unit         string
+	PropertyID       string
+	DeviceID         string
+	SerialNumber     string
+	Identify         string
+	Name             string
+	PropertyType     string // 属性业务类型，历史与业务展示使用
+	DataTypeExplicit bool   // dataType 是否由点位显式配置；false 表示回退属性 type
+	DataType         string
+	NodeID           string
+	Unit             string
 }
 
 // MqttParam 描述单个 MQTT 采集点。
 type MqttParam struct {
-	PropertyID     string
-	DeviceID       string
-	SerialNumber   string
-	Identify       string
-	Name           string
-	DataType       string
-	SubscribeTopic string
-	PublishTopic   string
-	Path           string
-	Qos            byte
-	ReadDisabled   bool
-	Unit           string
+	PropertyID       string
+	DeviceID         string
+	SerialNumber     string
+	Identify         string
+	Name             string
+	PropertyType     string // 属性业务类型，历史与业务展示使用
+	DataTypeExplicit bool   // dataType 是否由点位显式配置；false 表示回退属性 type
+	DataType         string
+	SubscribeTopic   string
+	PublishTopic     string
+	Path             string
+	Qos              byte
+	ReadDisabled     bool
+	Unit             string
 }
 
 // MqttCommand 描述单个 MQTT 控制点。
 type MqttCommand struct {
-	PropertyID     string
-	DeviceID       string
-	SerialNumber   string
-	Identify       string
-	Name           string
-	DataType       string
-	SubscribeTopic string
-	PublishTopic   string
-	Path           string
-	Qos            byte
-	Unit           string
+	PropertyID       string
+	DeviceID         string
+	SerialNumber     string
+	Identify         string
+	Name             string
+	PropertyType     string // 属性业务类型，历史与业务展示使用
+	DataTypeExplicit bool   // dataType 是否由点位显式配置；false 表示回退属性 type
+	DataType         string
+	SubscribeTopic   string
+	PublishTopic     string
+	Path             string
+	Qos              byte
+	Unit             string
 }
 
 // BuildRuntimeConfig converts raw device configs into DeviceRuntime slices.
@@ -355,20 +371,22 @@ func parseModbusPoints(dev DeviceConfig, slaveID uint64) ([]ModbusParam, []Modbu
 					continue
 				}
 				params = append(params, ModbusParam{
-					PropertyID:   prop.ID,
-					DeviceID:     dev.ID,
-					SerialNumber: dev.SerialNumber,
-					Identify:     prop.Key,
-					Name:         prop.Name,
-					DataType:     prop.Type,
-					FunctionCode: fc,
-					Address:      addr,
-					DeviceAddr:   slaveID,
-					Quantity:     pt.Quantity,
-					Bit:          pt.Bit,
-					ReadDisabled: isReadDisabled(prop.Access),
-					Unit:         prop.Unit,
-					Endian:       strings.ToUpper(strings.TrimSpace(pt.Endian)),
+					PropertyID:       prop.ID,
+					DeviceID:         dev.ID,
+					SerialNumber:     dev.SerialNumber,
+					Identify:         prop.Key,
+					Name:             prop.Name,
+					PropertyType:     prop.Type,
+					DataType:         effectiveDataType(pt.DataType, prop.Type),
+					DataTypeExplicit: strings.TrimSpace(pt.DataType) != "",
+					FunctionCode:     fc,
+					Address:          addr,
+					DeviceAddr:       slaveID,
+					Quantity:         pt.Quantity,
+					Bit:              pt.Bit,
+					ReadDisabled:     isReadDisabled(prop.Access),
+					Unit:             prop.Unit,
+					Endian:           strings.ToUpper(strings.TrimSpace(pt.Endian)),
 				})
 			}
 			if !isWriteEnabled(prop.Access) {
@@ -386,18 +404,20 @@ func parseModbusPoints(dev DeviceConfig, slaveID uint64) ([]ModbusParam, []Modbu
 					continue
 				}
 				commands = append(commands, ModbusCommand{
-					PropertyID:   prop.ID,
-					DeviceID:     dev.ID,
-					SerialNumber: dev.SerialNumber,
-					Identify:     prop.Key,
-					Name:         prop.Name,
-					DataType:     prop.Type,
-					FunctionCode: fc,
-					Address:      addr,
-					DeviceAddr:   slaveID,
-					Quantity:     pt.Quantity,
-					Unit:         prop.Unit,
-					Endian:       strings.ToUpper(strings.TrimSpace(pt.Endian)),
+					PropertyID:       prop.ID,
+					DeviceID:         dev.ID,
+					SerialNumber:     dev.SerialNumber,
+					Identify:         prop.Key,
+					Name:             prop.Name,
+					PropertyType:     prop.Type,
+					DataType:         effectiveDataType(pt.DataType, prop.Type),
+					DataTypeExplicit: strings.TrimSpace(pt.DataType) != "",
+					FunctionCode:     fc,
+					Address:          addr,
+					DeviceAddr:       slaveID,
+					Quantity:         pt.Quantity,
+					Unit:             prop.Unit,
+					Endian:           strings.ToUpper(strings.TrimSpace(pt.Endian)),
 				})
 			}
 		default:
@@ -439,15 +459,17 @@ func parseOpcuaPoints(dev DeviceConfig) ([]OpcuaParam, []OpcuaCommand) {
 					continue
 				}
 				params = append(params, OpcuaParam{
-					PropertyID:   prop.ID,
-					DeviceID:     dev.ID,
-					SerialNumber: dev.SerialNumber,
-					Identify:     prop.Key,
-					Name:         prop.Name,
-					DataType:     prop.Type,
-					NodeID:       nodeID,
-					ReadDisabled: isReadDisabled(prop.Access),
-					Unit:         prop.Unit,
+					PropertyID:       prop.ID,
+					DeviceID:         dev.ID,
+					SerialNumber:     dev.SerialNumber,
+					Identify:         prop.Key,
+					Name:             prop.Name,
+					PropertyType:     prop.Type,
+					DataType:         effectiveDataType(node.DataType, prop.Type),
+					DataTypeExplicit: strings.TrimSpace(node.DataType) != "",
+					NodeID:           nodeID,
+					ReadDisabled:     isReadDisabled(prop.Access),
+					Unit:             prop.Unit,
 				})
 			}
 			if !isWriteEnabled(prop.Access) {
@@ -460,14 +482,16 @@ func parseOpcuaPoints(dev DeviceConfig) ([]OpcuaParam, []OpcuaCommand) {
 					continue
 				}
 				commands = append(commands, OpcuaCommand{
-					PropertyID:   prop.ID,
-					DeviceID:     dev.ID,
-					SerialNumber: dev.SerialNumber,
-					Identify:     prop.Key,
-					Name:         prop.Name,
-					DataType:     prop.Type,
-					NodeID:       nodeID,
-					Unit:         prop.Unit,
+					PropertyID:       prop.ID,
+					DeviceID:         dev.ID,
+					SerialNumber:     dev.SerialNumber,
+					Identify:         prop.Key,
+					Name:             prop.Name,
+					PropertyType:     prop.Type,
+					DataType:         effectiveDataType(node.DataType, prop.Type),
+					DataTypeExplicit: strings.TrimSpace(node.DataType) != "",
+					NodeID:           nodeID,
+					Unit:             prop.Unit,
 				})
 			}
 		default:
@@ -529,7 +553,9 @@ func parseBacnetPoints(dev DeviceConfig) ([]BacnetParam, []BacnetCommand) {
 				SerialNumber:       dev.SerialNumber,
 				Identify:           prop.Key,
 				Name:               prop.Name,
-				DataType:           prop.Type,
+				PropertyType:       prop.Type,
+				DataType:           effectiveDataType(obj.DataType, prop.Type),
+				DataTypeExplicit:   strings.TrimSpace(obj.DataType) != "",
 				ObjectType:         objectType,
 				ObjectInstance:     obj.Instance,
 				PropertyIdentifier: propertyID,
@@ -563,7 +589,9 @@ func parseBacnetPoints(dev DeviceConfig) ([]BacnetParam, []BacnetCommand) {
 				SerialNumber:       dev.SerialNumber,
 				Identify:           prop.Key,
 				Name:               prop.Name,
-				DataType:           prop.Type,
+				PropertyType:       prop.Type,
+				DataType:           effectiveDataType(obj.DataType, prop.Type),
+				DataTypeExplicit:   strings.TrimSpace(obj.DataType) != "",
 				ObjectType:         objectType,
 				ObjectInstance:     obj.Instance,
 				PropertyIdentifier: propertyID,
@@ -765,17 +793,19 @@ func parseMqttPoints(dev DeviceConfig) ([]MqttParam, []MqttCommand) {
 					path = prop.Key
 				}
 				params = append(params, MqttParam{
-					PropertyID:     prop.ID,
-					DeviceID:       dev.ID,
-					SerialNumber:   dev.SerialNumber,
-					Identify:       prop.Key,
-					Name:           prop.Name,
-					DataType:       prop.Type,
-					SubscribeTopic: subTopic,
-					Path:           path,
-					Qos:            topic.Qos,
-					ReadDisabled:   isReadDisabled(prop.Access),
-					Unit:           prop.Unit,
+					PropertyID:       prop.ID,
+					DeviceID:         dev.ID,
+					SerialNumber:     dev.SerialNumber,
+					Identify:         prop.Key,
+					Name:             prop.Name,
+					PropertyType:     prop.Type,
+					DataType:         effectiveDataType(topic.DataType, prop.Type),
+					DataTypeExplicit: strings.TrimSpace(topic.DataType) != "",
+					SubscribeTopic:   subTopic,
+					Path:             path,
+					Qos:              topic.Qos,
+					ReadDisabled:     isReadDisabled(prop.Access),
+					Unit:             prop.Unit,
 				})
 			}
 			if !isWriteEnabled(prop.Access) {
@@ -788,16 +818,18 @@ func parseMqttPoints(dev DeviceConfig) ([]MqttParam, []MqttCommand) {
 					path = prop.Key
 				}
 				commands = append(commands, MqttCommand{
-					PropertyID:   prop.ID,
-					DeviceID:     dev.ID,
-					SerialNumber: dev.SerialNumber,
-					Identify:     prop.Key,
-					Name:         prop.Name,
-					DataType:     prop.Type,
-					PublishTopic: pubTopic,
-					Path:         path,
-					Qos:          topic.Qos,
-					Unit:         prop.Unit,
+					PropertyID:       prop.ID,
+					DeviceID:         dev.ID,
+					SerialNumber:     dev.SerialNumber,
+					Identify:         prop.Key,
+					Name:             prop.Name,
+					PropertyType:     prop.Type,
+					DataType:         effectiveDataType(topic.DataType, prop.Type),
+					DataTypeExplicit: strings.TrimSpace(topic.DataType) != "",
+					PublishTopic:     pubTopic,
+					Path:             path,
+					Qos:              topic.Qos,
+					Unit:             prop.Unit,
 				})
 			}
 		default:
@@ -906,4 +938,13 @@ func parseMqttParams(dev DeviceConfig) (clientID, username, password string, qos
 	}
 
 	return
+}
+
+// effectiveDataType prefers an explicitly configured point data type and falls
+// back to the property type for historical configurations that do not have one.
+func effectiveDataType(pointDataType, propertyType string) string {
+	if strings.TrimSpace(pointDataType) != "" {
+		return pointDataType
+	}
+	return propertyType
 }

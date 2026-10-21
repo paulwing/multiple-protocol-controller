@@ -45,7 +45,7 @@ func buildModbusFrame(msg *protocol.CommandMessage) ([]byte, error) {
 
 	switch functionCode {
 	case ModbusRtuFunCode.WriteHoldRegister:
-		data, err := encodeRegisterValue(msg.Value, msg.DataType, endian)
+		data, err := encodeRegisterValue(msg.Value, msg.DataType, endian, msg.DataTypeExplicit)
 		if err != nil {
 			return nil, err
 		}
@@ -74,7 +74,7 @@ func buildModbusFrame(msg *protocol.CommandMessage) ([]byte, error) {
 		binary.BigEndian.PutUint16(frame[4:], value)
 		return appendCRC(frame), nil
 	case ModbusRtuFunCode.WriteMultiRegister:
-		data, err := encodeRegisterValue(msg.Value, msg.DataType, endian)
+		data, err := encodeRegisterValue(msg.Value, msg.DataType, endian, msg.DataTypeExplicit)
 		if err != nil {
 			return nil, err
 		}
@@ -112,7 +112,124 @@ func buildModbusFrame(msg *protocol.CommandMessage) ([]byte, error) {
 	}
 }
 
-func encodeRegisterValue(value interface{}, dataType string, endian string) ([]byte, error) {
+func encodeRegisterValue(value interface{}, dataType string, endian string, explicit bool) ([]byte, error) {
+	if !explicit {
+		// Old configurations fall back to the property type and keep the
+		// historical permissive conversion (including json.Number -> float64).
+		return encodeRegisterValueLegacy(value, dataType, endian)
+	}
+	dt := strings.ToLower(strings.TrimSpace(dataType))
+	if dt == "" {
+		dt = "ushort"
+	}
+
+	switch dt {
+	case "short":
+		n, err := utils.CoerceInt64(value)
+		if err != nil {
+			return nil, fmt.Errorf("modbusRtu: %w", err)
+		}
+		if n < math.MinInt16 || n > math.MaxInt16 {
+			return nil, fmt.Errorf("modbusRtu: %d exceeds int16 range", n)
+		}
+		buf := make([]byte, 2)
+		binary.BigEndian.PutUint16(buf, uint16(int16(n)))
+		return applyEndian(buf, endian), nil
+	case "int16":
+		n, err := utils.CoerceExactInt64(value)
+		if err != nil {
+			return nil, fmt.Errorf("modbusRtu: %w", err)
+		}
+		if n < math.MinInt16 || n > math.MaxInt16 {
+			return nil, fmt.Errorf("modbusRtu: %d exceeds int16 range", n)
+		}
+		buf := make([]byte, 2)
+		binary.BigEndian.PutUint16(buf, uint16(int16(n)))
+		return applyEndian(buf, endian), nil
+	case "ushort":
+		n, err := utils.CoerceUint64(value)
+		if err != nil {
+			return nil, fmt.Errorf("modbusRtu: %w", err)
+		}
+		if n > math.MaxUint16 {
+			return nil, fmt.Errorf("modbusRtu: %d exceeds uint16 range", n)
+		}
+		buf := make([]byte, 2)
+		binary.BigEndian.PutUint16(buf, uint16(n))
+		return applyEndian(buf, endian), nil
+	case "uint16":
+		n, err := utils.CoerceExactUint64(value)
+		if err != nil {
+			return nil, fmt.Errorf("modbusRtu: %w", err)
+		}
+		if n > math.MaxUint16 {
+			return nil, fmt.Errorf("modbusRtu: %d exceeds uint16 range", n)
+		}
+		buf := make([]byte, 2)
+		binary.BigEndian.PutUint16(buf, uint16(n))
+		return applyEndian(buf, endian), nil
+	case "int32":
+		n, err := utils.CoerceExactInt64(value)
+		if err != nil {
+			return nil, fmt.Errorf("modbusRtu: %w", err)
+		}
+		if n < math.MinInt32 || n > math.MaxInt32 {
+			return nil, fmt.Errorf("modbusRtu: %d exceeds int32 range", n)
+		}
+		buf := make([]byte, 4)
+		binary.BigEndian.PutUint32(buf, uint32(int32(n)))
+		return applyEndian(buf, endian), nil
+	case "uint32":
+		n, err := utils.CoerceExactUint64(value)
+		if err != nil {
+			return nil, fmt.Errorf("modbusRtu: %w", err)
+		}
+		if n > math.MaxUint32 {
+			return nil, fmt.Errorf("modbusRtu: %d exceeds uint32 range", n)
+		}
+		buf := make([]byte, 4)
+		binary.BigEndian.PutUint32(buf, uint32(n))
+		return applyEndian(buf, endian), nil
+	case "float", "float32":
+		f, err := utils.CoerceFloat64(value)
+		if err != nil {
+			return nil, fmt.Errorf("modbusRtu: %w", err)
+		}
+		buf := make([]byte, 4)
+		binary.BigEndian.PutUint32(buf, math.Float32bits(float32(f)))
+		return applyEndian(buf, endian), nil
+	case "double", "float64":
+		f, err := utils.CoerceFloat64(value)
+		if err != nil {
+			return nil, fmt.Errorf("modbusRtu: %w", err)
+		}
+		buf := make([]byte, 8)
+		binary.BigEndian.PutUint64(buf, math.Float64bits(f))
+		return applyEndian(buf, endian), nil
+	case "uint64":
+		n, err := utils.CoerceExactUint64(value)
+		if err != nil {
+			return nil, fmt.Errorf("modbusRtu: %w", err)
+		}
+		buf := make([]byte, 8)
+		binary.BigEndian.PutUint64(buf, n)
+		return applyEndian(buf, endian), nil
+	case "int64":
+		n, err := utils.CoerceExactInt64(value)
+		if err != nil {
+			return nil, fmt.Errorf("modbusRtu: %w", err)
+		}
+		buf := make([]byte, 8)
+		binary.BigEndian.PutUint64(buf, uint64(n))
+		return applyEndian(buf, endian), nil
+	default:
+		return nil, fmt.Errorf("modbusRtu: unsupported command data type %s", dataType)
+	}
+}
+
+// encodeRegisterValueLegacy reproduces the pre-dataType encoder exactly.
+func encodeRegisterValueLegacy(value interface{}, dataType string, endian string) ([]byte, error) {
+	value = utils.LegacyJSONNumberValue(value)
 	dt := strings.ToLower(strings.TrimSpace(dataType))
 	if dt == "" {
 		dt = "ushort"

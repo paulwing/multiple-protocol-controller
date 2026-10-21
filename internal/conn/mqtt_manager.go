@@ -1,8 +1,10 @@
 package conn
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -352,15 +354,41 @@ func mqttClientKey(cfg MqttConfig) string {
 
 // ParseMqttPayload 解析 MQTT 消息载荷，支持 JSON 和纯文本
 func ParseMqttPayload(payload []byte, path string) (interface{}, error) {
+	return parseMqttPayload(payload, path, false)
+}
+
+// ParseMqttPayloadExact keeps JSON numbers as json.Number so an explicitly typed
+// integer point is not rounded through float64. Old configurations keep using
+// ParseMqttPayload and its float64 behaviour.
+func ParseMqttPayloadExact(payload []byte, path string) (interface{}, error) {
+	return parseMqttPayload(payload, path, true)
+}
+
+func parseMqttPayload(payload []byte, path string, useNumber bool) (interface{}, error) {
 	if len(payload) == 0 {
 		return nil, fmt.Errorf("empty payload")
+	}
+
+	decode := func(target interface{}) error {
+		decoder := json.NewDecoder(bytes.NewReader(payload))
+		if useNumber {
+			decoder.UseNumber()
+		}
+		if err := decoder.Decode(target); err != nil {
+			return err
+		}
+		// json.Unmarshal rejected trailing content; keep that behaviour.
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			return fmt.Errorf("unexpected trailing content")
+		}
+		return nil
 	}
 
 	// 尝试 JSON 解析
 	if path == "" {
 		// 没有路径，直接返回原始值
 		var result interface{}
-		if err := json.Unmarshal(payload, &result); err != nil {
+		if err := decode(&result); err != nil {
 			// 返回原始字符串
 			return string(payload), nil
 		}
@@ -368,7 +396,7 @@ func ParseMqttPayload(payload []byte, path string) (interface{}, error) {
 	}
 
 	var data interface{}
-	if err := json.Unmarshal(payload, &data); err != nil {
+	if err := decode(&data); err != nil {
 		return string(payload), nil
 	}
 

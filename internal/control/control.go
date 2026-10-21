@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"sort"
 	"strconv"
@@ -19,6 +20,7 @@ import (
 	opcuaProtocol "multiple-protocol-controller/internal/protocol/opcua"
 	"multiple-protocol-controller/internal/store"
 	"multiple-protocol-controller/pkg/logger"
+	"multiple-protocol-controller/pkg/utils"
 
 	"github.com/gopcua/opcua/ua"
 	"go.uber.org/zap"
@@ -115,7 +117,7 @@ func dispatchBacnet(device config.DeviceRuntime, item map[string]interface{}, co
 			results = append(results, failedDispatch(serial, key, errors.New("command mapping not found")))
 			continue
 		}
-		target, err := bacnetProtocol.NormalizeValue(item[key], command.DataType)
+		target, err := normalizeBacnetCommandValue(item[key], command.DataType, command.DataTypeExplicit)
 		if err != nil {
 			results = append(results, failedDispatch(serial, key, err))
 			continue
@@ -133,7 +135,7 @@ func dispatchBacnet(device config.DeviceRuntime, item map[string]interface{}, co
 			results = append(results, completedDispatch(serial, key, commandExecutionResult{Status: commandStatusUnverified}))
 			continue
 		}
-		verification := verifyControlReadback(ctx, target, command.DataType, 100*time.Millisecond, func(readCtx context.Context) (any, error) {
+		verification := verifyControlReadback(ctx, target, command.DataType, command.DataTypeExplicit, readParam.DataType, readParam.DataTypeExplicit, 100*time.Millisecond, func(readCtx context.Context) (any, error) {
 			return manager.ReadPresentValue(readCtx, connectionConfig, readParam.ObjectType, readParam.ObjectInstance)
 		})
 		cancel()
@@ -157,12 +159,17 @@ func dispatchMqtt(device config.DeviceRuntime, item map[string]interface{}, comm
 			results = append(results, failedDispatch(serial, key, errors.New("command mapping not found")))
 			continue
 		}
-		payload, err := json.Marshal(buildMqttPayload(command.Path, command.DataType, item[key]))
+		payload, err := buildMqttPayload(command.Path, command.DataType, command.DataTypeExplicit, item[key])
 		if err != nil {
 			results = append(results, failedDispatch(serial, key, err))
 			continue
 		}
-		if err := manager.Publish(connectionConfig, command.PublishTopic, payload, command.Qos); err != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			results = append(results, failedDispatch(serial, key, err))
+			continue
+		}
+		if err := manager.Publish(connectionConfig, command.PublishTopic, encoded, command.Qos); err != nil {
 			results = append(results, failedDispatch(serial, key, err))
 			continue
 		}
@@ -186,7 +193,7 @@ func dispatchOpcua(device config.DeviceRuntime, item map[string]interface{}, com
 			results = append(results, failedDispatch(serial, key, errors.New("command mapping not found")))
 			continue
 		}
-		target, err := opcuaProtocol.NormalizeValue(item[key], command.DataType)
+		target, err := normalizeOpcuaCommandValue(item[key], command.DataType, command.DataTypeExplicit)
 		if err != nil {
 			results = append(results, failedDispatch(serial, key, err))
 			continue
@@ -204,7 +211,7 @@ func dispatchOpcua(device config.DeviceRuntime, item map[string]interface{}, com
 			results = append(results, completedDispatch(serial, key, commandExecutionResult{Status: commandStatusUnverified}))
 			continue
 		}
-		verification := verifyControlReadback(ctx, target, command.DataType, 100*time.Millisecond, func(readCtx context.Context) (any, error) {
+		verification := verifyControlReadback(ctx, target, command.DataType, command.DataTypeExplicit, readParam.DataType, readParam.DataTypeExplicit, 100*time.Millisecond, func(readCtx context.Context) (any, error) {
 			values, err := manager.ReadNodes(readCtx, connectionConfig, []string{readParam.NodeID})
 			if err != nil {
 				return nil, err
@@ -212,7 +219,7 @@ func dispatchOpcua(device config.DeviceRuntime, item map[string]interface{}, com
 			if len(values) == 0 || values[0] == nil || values[0].Status != ua.StatusOK || values[0].Value == nil {
 				return nil, errors.New("opcua readback returned no valid value")
 			}
-			return opcuaProtocol.NormalizeValue(values[0].Value.Value(), command.DataType)
+			return normalizeOpcuaCommandValue(values[0].Value.Value(), readParam.DataType, readParam.DataTypeExplicit)
 		})
 		cancel()
 		results = append(results, completedDispatch(serial, key, verification))
@@ -239,7 +246,7 @@ func dispatchModbus(manager *conn.Manager, device config.DeviceRuntime, item map
 		}
 		frame, err := protoImpl.EncodeCommand(&protocol.CommandMessage{
 			DeviceAddress: device.SlaveID, FunctionCode: command.FunctionCode, Address: command.Address,
-			DataType: command.DataType, Endian: command.Endian, Value: item[key],
+			DataType: command.DataType, DataTypeExplicit: command.DataTypeExplicit, Endian: command.Endian, Value: item[key],
 		})
 		if err != nil {
 			results = append(results, failedDispatch(serial, key, err))
@@ -531,7 +538,11 @@ func findMqttCommand(cmds []config.MqttCommand, identify string) (config.MqttCom
 	return config.MqttCommand{}, false
 }
 
-func buildMqttPayload(path string, dataType string, value interface{}) map[string]interface{} {
+func buildMqttPayload(path string, dataType string, explicit bool, value interface{}) (map[string]interface{}, error) {
+	target, err := normalizeCommandValue(dataType, explicit, value)
+	if err != nil {
+		return nil, err
+	}
 	// 如果有路径，构建嵌套结构
 	if path != "" {
 		result := make(map[string]interface{})
@@ -541,16 +552,169 @@ func buildMqttPayload(path string, dataType string, value interface{}) map[strin
 			current[parts[i]] = make(map[string]interface{})
 			current = current[parts[i]].(map[string]interface{})
 		}
-		current[parts[len(parts)-1]] = normalizeCommandValue(dataType, value)
-		return result
+		current[parts[len(parts)-1]] = target
+		return result, nil
 	}
 	// 无路径，直接返回值
 	return map[string]interface{}{
-		"value": normalizeCommandValue(dataType, value),
+		"value": target,
+	}, nil
+}
+
+func normalizeCommandValue(dataType string, explicit bool, value interface{}) (interface{}, error) {
+	if !explicit {
+		return normalizeCommandValueLegacy(dataType, value), nil
+	}
+	dt := strings.ToLower(strings.TrimSpace(dataType))
+	switch dt {
+	case "bool":
+		switch v := value.(type) {
+		case bool:
+			return v, nil
+		case string:
+			return strings.ToLower(v) == "true" || v == "1", nil
+		case float64:
+			return v != 0, nil
+		case json.Number:
+			f, err := v.Float64()
+			if err != nil {
+				return nil, err
+			}
+			return f != 0, nil
+		default:
+			return value, nil
+		}
+	case "int8":
+		return narrowCommandSigned(value, math.MinInt8, math.MaxInt8, func(n int64) interface{} { return int8(n) })
+	case "int16":
+		return narrowCommandSigned(value, math.MinInt16, math.MaxInt16, func(n int64) interface{} { return int16(n) })
+	case "int32":
+		return narrowCommandSigned(value, math.MinInt32, math.MaxInt32, func(n int64) interface{} { return int32(n) })
+	case "int64":
+		n, err := utils.CoerceExactInt64(value)
+		if err != nil {
+			return nil, err
+		}
+		return n, nil
+	case "uint8":
+		return narrowCommandUnsigned(value, math.MaxUint8, func(n uint64) interface{} { return uint8(n) })
+	case "uint16":
+		return narrowCommandUnsigned(value, math.MaxUint16, func(n uint64) interface{} { return uint16(n) })
+	case "uint32":
+		return narrowCommandUnsigned(value, math.MaxUint32, func(n uint64) interface{} { return uint32(n) })
+	case "uint64":
+		n, err := utils.CoerceExactUint64(value)
+		if err != nil {
+			return nil, err
+		}
+		return n, nil
+	case "float32":
+		f, err := utils.CoerceFloat64(value)
+		if err != nil {
+			return nil, err
+		}
+		if math.IsNaN(f) || math.IsInf(f, 0) || math.IsInf(float64(float32(f)), 0) {
+			return nil, fmt.Errorf("value %v does not fit float32", f)
+		}
+		return float32(f), nil
+	case "float64":
+		f, err := utils.CoerceFloat64(value)
+		if err != nil {
+			return nil, err
+		}
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil, fmt.Errorf("value %v is not a finite float64", f)
+		}
+		return f, nil
+	case "int":
+		switch v := value.(type) {
+		case int64:
+			return v, nil
+		case float64:
+			return int64(v), nil
+		case json.Number:
+			// Legacy behaviour for the old "int" name: the value used to arrive
+			// as float64 and was truncated.
+			f, err := v.Float64()
+			if err != nil {
+				return value, nil
+			}
+			return int64(f), nil
+		case string:
+			var i int64
+			if _, err := fmt.Sscanf(v, "%d", &i); err == nil {
+				return i, nil
+			}
+			return value, nil
+		default:
+			return value, nil
+		}
+	case "float", "double":
+		switch v := value.(type) {
+		case float64:
+			return v, nil
+		case int64:
+			return float64(v), nil
+		case json.Number:
+			f, err := v.Float64()
+			if err != nil {
+				return value, nil
+			}
+			return f, nil
+		case string:
+			var f float64
+			if _, err := fmt.Sscanf(v, "%f", &f); err == nil {
+				return f, nil
+			}
+			return value, nil
+		default:
+			return value, nil
+		}
+	default:
+		return value, nil
 	}
 }
 
-func normalizeCommandValue(dataType string, value interface{}) interface{} {
+func narrowCommandSigned(value interface{}, min int64, max int64, convert func(int64) interface{}) (interface{}, error) {
+	n, err := utils.CoerceExactInt64(value)
+	if err != nil {
+		return nil, err
+	}
+	if n < min || n > max {
+		return nil, fmt.Errorf("%d exceeds %T range", n, convert(0))
+	}
+	return convert(n), nil
+}
+
+func narrowCommandUnsigned(value interface{}, max uint64, convert func(uint64) interface{}) (interface{}, error) {
+	n, err := utils.CoerceExactUint64(value)
+	if err != nil {
+		return nil, err
+	}
+	if n > max {
+		return nil, fmt.Errorf("%d exceeds %T range", n, convert(0))
+	}
+	return convert(n), nil
+}
+
+func normalizeBacnetCommandValue(value interface{}, dataType string, explicit bool) (interface{}, error) {
+	if explicit {
+		return bacnetProtocol.NormalizeValueExplicit(value, dataType)
+	}
+	return bacnetProtocol.NormalizeValue(value, dataType)
+}
+
+func normalizeOpcuaCommandValue(value interface{}, dataType string, explicit bool) (interface{}, error) {
+	if explicit {
+		return opcuaProtocol.NormalizeValueExplicit(value, dataType)
+	}
+	return opcuaProtocol.NormalizeValue(value, dataType)
+}
+
+// normalizeCommandValueLegacy reproduces the original MQTT command conversion
+// for properties without an explicit point data type.
+func normalizeCommandValueLegacy(dataType string, value interface{}) interface{} {
+	value = utils.LegacyJSONNumberValue(value)
 	dt := strings.ToLower(strings.TrimSpace(dataType))
 	switch dt {
 	case "bool":

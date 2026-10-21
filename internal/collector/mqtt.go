@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"multiple-protocol-controller/internal/config"
 	"multiple-protocol-controller/internal/conn"
 	"multiple-protocol-controller/internal/protocol"
+	"multiple-protocol-controller/pkg/utils"
 
 	"go.uber.org/zap"
 )
@@ -184,7 +186,14 @@ func (w *mqttWorker) handleMessage(msg conn.MqttMessage, topicParams map[string]
 
 	// 解析消息
 	for _, param := range params {
-		value, err := conn.ParseMqttPayload(msg.Payload, param.Path)
+		parse := conn.ParseMqttPayload
+		if param.DataTypeExplicit {
+			// Explicit integer points must see the exact JSON number, not a
+			// float64 rounded before normalization. Old configs keep the old
+			// parser and its behaviour.
+			parse = conn.ParseMqttPayloadExact
+		}
+		value, err := parse(msg.Payload, param.Path)
 		if err != nil {
 			logInfo("mqtt parse payload failed",
 				zap.String("deviceSerial", w.spec.Device.Config.SerialNumber),
@@ -194,7 +203,7 @@ func (w *mqttWorker) handleMessage(msg conn.MqttMessage, topicParams map[string]
 		}
 
 		// 类型转换
-		converted, err := normalizeMqttValue(value, param.DataType)
+		converted, err := normalizeMqttValue(value, param.DataType, param.DataTypeExplicit)
 		if err != nil {
 			logInfo("mqtt value normalize failed",
 				zap.String("deviceSerial", w.spec.Device.Config.SerialNumber),
@@ -213,11 +222,10 @@ func (w *mqttWorker) handleMessage(msg conn.MqttMessage, topicParams map[string]
 }
 
 // normalizeMqttValue 将值转换为目标类型
-func normalizeMqttValue(value interface{}, dataType string) (interface{}, error) {
-	if value == nil {
-		return nil, fmt.Errorf("nil value")
-	}
-
+// normalizeMqttValueLegacy is the pre-dataType read conversion, preserved for
+// properties that fall back to their old property type.
+func normalizeMqttValueLegacy(value interface{}, dataType string) (interface{}, error) {
+	value = utils.LegacyJSONNumberValue(value)
 	dt := strings.ToLower(strings.TrimSpace(dataType))
 	if dt == "" {
 		return value, nil
@@ -249,9 +257,7 @@ func normalizeMqttValue(value interface{}, dataType string) (interface{}, error)
 
 	// 尝试类型转换
 	switch dt {
-	case "float":
-		return toFloat64(value)
-	case "double":
+	case "float", "double":
 		return toFloat64(value)
 	case "int", "int32", "int64":
 		return toInt64(value)
@@ -271,6 +277,139 @@ func normalizeMqttValue(value interface{}, dataType string) (interface{}, error)
 		}
 		return fmt.Sprintf("%v", value), nil
 	}
+}
+
+func normalizeMqttValue(value interface{}, dataType string, explicit bool) (interface{}, error) {
+	if value == nil {
+		return nil, fmt.Errorf("nil value")
+	}
+	if !explicit {
+		return normalizeMqttValueLegacy(value, dataType)
+	}
+
+	dt := strings.ToLower(strings.TrimSpace(dataType))
+	if dt == "" {
+		return value, nil
+	}
+
+	// 如果类型匹配，直接返回
+	switch dt {
+	case "float", "double":
+		if _, ok := value.(float64); ok {
+			return value, nil
+		}
+	case "int", "int32", "int64":
+		if _, ok := value.(int64); ok {
+			return value, nil
+		}
+	case "uint", "uint32", "uint64":
+		if _, ok := value.(uint64); ok {
+			return value, nil
+		}
+	case "bool":
+		if _, ok := value.(bool); ok {
+			return value, nil
+		}
+	case "string":
+		if _, ok := value.(string); ok {
+			return value, nil
+		}
+	}
+
+	// Canonical point-level types are explicit configuration: convert without
+	// rounding and reject values the target width cannot hold. The legacy names
+	// int/uint/float/double keep the loose conversion below.
+	switch dt {
+	case "int8":
+		return coerceNarrowSigned(value, math.MinInt8, math.MaxInt8, func(n int64) interface{} { return int8(n) })
+	case "int16":
+		return coerceNarrowSigned(value, math.MinInt16, math.MaxInt16, func(n int64) interface{} { return int16(n) })
+	case "int32":
+		return coerceNarrowSigned(value, math.MinInt32, math.MaxInt32, func(n int64) interface{} { return int32(n) })
+	case "int64":
+		n, err := utils.CoerceExactInt64(value)
+		if err != nil {
+			return nil, err
+		}
+		return n, nil
+	case "uint8":
+		return coerceNarrowUnsigned(value, math.MaxUint8, func(n uint64) interface{} { return uint8(n) })
+	case "uint16":
+		return coerceNarrowUnsigned(value, math.MaxUint16, func(n uint64) interface{} { return uint16(n) })
+	case "uint32":
+		return coerceNarrowUnsigned(value, math.MaxUint32, func(n uint64) interface{} { return uint32(n) })
+	case "uint64":
+		n, err := utils.CoerceExactUint64(value)
+		if err != nil {
+			return nil, err
+		}
+		return n, nil
+	case "float32":
+		f, err := utils.CoerceFloat64(value)
+		if err != nil {
+			return nil, err
+		}
+		if math.IsNaN(f) || math.IsInf(f, 0) || math.IsInf(float64(float32(f)), 0) {
+			return nil, fmt.Errorf("value %v does not fit float32", f)
+		}
+		return float32(f), nil
+	case "float64":
+		f, err := utils.CoerceFloat64(value)
+		if err != nil {
+			return nil, err
+		}
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil, fmt.Errorf("value %v is not a finite float64", f)
+		}
+		return f, nil
+	}
+
+	// 尝试类型转换
+	switch dt {
+	case "float":
+		return toFloat64(value)
+	case "double":
+		return toFloat64(value)
+	case "int":
+		return toInt64(value)
+	case "uint":
+		return toUint64(value)
+	case "bool":
+		return toBool(value)
+	case "string":
+		return fmt.Sprintf("%v", value), nil
+	default:
+		// JSON number
+		if f, ok := toFloat64(value); ok == nil {
+			return f, nil
+		}
+		if b, ok := toBool(value); ok == nil {
+			return b, nil
+		}
+		return fmt.Sprintf("%v", value), nil
+	}
+}
+
+func coerceNarrowSigned(value interface{}, min int64, max int64, convert func(int64) interface{}) (interface{}, error) {
+	n, err := utils.CoerceExactInt64(value)
+	if err != nil {
+		return nil, err
+	}
+	if n < min || n > max {
+		return nil, fmt.Errorf("%d exceeds %T range", n, convert(0))
+	}
+	return convert(n), nil
+}
+
+func coerceNarrowUnsigned(value interface{}, max uint64, convert func(uint64) interface{}) (interface{}, error) {
+	n, err := utils.CoerceExactUint64(value)
+	if err != nil {
+		return nil, err
+	}
+	if n > max {
+		return nil, fmt.Errorf("%d exceeds %T range", n, convert(0))
+	}
+	return convert(n), nil
 }
 
 func toFloat64(v interface{}) (float64, error) {
@@ -310,6 +449,12 @@ func toInt64(v interface{}) (int64, error) {
 		return int64(val), nil
 	case float64:
 		return int64(val), nil
+	case json.Number:
+		f, err := val.Float64()
+		if err != nil {
+			return 0, err
+		}
+		return int64(f), nil
 	case string:
 		var i int64
 		if err := json.Unmarshal([]byte(val), &i); err == nil {
@@ -342,6 +487,15 @@ func toUint64(v interface{}) (uint64, error) {
 			return uint64(val), nil
 		}
 		return 0, fmt.Errorf("negative value")
+	case json.Number:
+		f, err := val.Float64()
+		if err != nil {
+			return 0, err
+		}
+		if f < 0 {
+			return 0, fmt.Errorf("negative value")
+		}
+		return uint64(f), nil
 	case string:
 		var u uint64
 		if err := json.Unmarshal([]byte(val), &u); err == nil {
@@ -363,6 +517,12 @@ func toBool(v interface{}) (bool, error) {
 		return val != 0, nil
 	case float64:
 		return val != 0, nil
+	case json.Number:
+		f, err := val.Float64()
+		if err != nil {
+			return false, err
+		}
+		return f != 0, nil
 	case string:
 		lower := strings.ToLower(val)
 		if lower == "true" || lower == "1" || lower == "yes" {

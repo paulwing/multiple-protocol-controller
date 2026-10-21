@@ -140,6 +140,16 @@ func Run(ctx context.Context) error {
 		}
 		return nil
 	})
+	// 6.发布纯网关在线状态（独立 key + TTL，不写 device:data）
+	g.Go(func() error {
+		redisClient, err := store.NewRedisClient(ctx, cfg.Redis.Address, cfg.Redis.Pwd, cfg.Redis.DB)
+		if err != nil {
+			return fmt.Errorf("gateway status client init failed: %w", err)
+		}
+		defer redisClient.Close()
+		collector.StartGatewayStatusPublisher(ctx, redisClient)
+		return nil
+	})
 
 	err = g.Wait()
 

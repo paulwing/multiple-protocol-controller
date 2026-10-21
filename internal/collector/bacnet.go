@@ -6,6 +6,7 @@ import (
 
 	"multiple-protocol-controller/internal/config"
 	"multiple-protocol-controller/internal/conn"
+	bacnetProtocol "multiple-protocol-controller/internal/protocol/bacnet"
 	"multiple-protocol-controller/pkg/utils"
 
 	"go.uber.org/zap"
@@ -109,7 +110,7 @@ func (w *bacnetWorker) collectOnce() {
 			continue
 		}
 
-		normalized, err := normalizeBacnetValue(value, param.DataType)
+		normalized, err := normalizeBacnetValue(value, param.DataType, param.DataTypeExplicit)
 		if err != nil {
 			logInfo("bacnet value normalize failed",
 				zap.String("deviceSerial", w.spec.Device.Config.SerialNumber),
@@ -121,7 +122,10 @@ func (w *bacnetWorker) collectOnce() {
 	}
 }
 
-func normalizeBacnetValue(value interface{}, dataType string) (interface{}, error) {
+// normalizeBacnetValueLegacy is the pre-dataType read conversion, preserved
+// for properties that fall back to their old property type.
+func normalizeBacnetValueLegacy(value interface{}, dataType string) (interface{}, error) {
+	value = utils.LegacyJSONNumberValue(value)
 	switch dataType {
 	case "float":
 		f, err := utils.CoerceFloat32(value)
@@ -143,6 +147,39 @@ func normalizeBacnetValue(value interface{}, dataType string) (interface{}, erro
 		return b, nil
 	case "string":
 		return utils.CoerceString(value), nil
+	default:
+		return value, nil
+	}
+}
+
+func normalizeBacnetValue(value interface{}, dataType string, explicit bool) (interface{}, error) {
+	if !explicit {
+		return normalizeBacnetValueLegacy(value, dataType)
+	}
+	switch dataType {
+	case "float":
+		f, err := utils.CoerceFloat32(value)
+		if err != nil {
+			return nil, err
+		}
+		return f, nil
+	case "int", "enum":
+		i, err := utils.CoerceInt32(value)
+		if err != nil {
+			return nil, err
+		}
+		return i, nil
+	case "bool":
+		b, err := utils.CoerceBool(value)
+		if err != nil {
+			return nil, err
+		}
+		return b, nil
+	case "string":
+		return utils.CoerceString(value), nil
+	case "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float32", "float64":
+		// 显式点位类型：校验范围并返回精确 Go 类型。
+		return bacnetProtocol.NormalizeValue(value, dataType)
 	default:
 		return value, nil
 	}
