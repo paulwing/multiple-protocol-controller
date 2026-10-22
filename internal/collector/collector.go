@@ -40,11 +40,12 @@ type Manager struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu            sync.Mutex
-	modbusWorkers map[string]*deviceWorker
-	bacnetWorkers map[string]*bacnetWorker
-	opcuaWorkers  map[string]*opcuaWorker
-	mqttWorkers   map[string]*mqttWorker
+	mu                sync.Mutex
+	modbusWorkers     map[string]*deviceWorker
+	bacnetWorkers     map[string]*bacnetWorker
+	opcuaWorkers      map[string]*opcuaWorker
+	mqttWorkers       map[string]*mqttWorker
+	mqttWorkerFactory func(context.Context, mqttSpec) *mqttWorker
 }
 
 func newManager(ctx context.Context) *Manager {
@@ -53,12 +54,13 @@ func newManager(ctx context.Context) *Manager {
 	}
 	c, cancel := context.WithCancel(ctx)
 	return &Manager{
-		ctx:           c,
-		cancel:        cancel,
-		modbusWorkers: make(map[string]*deviceWorker),
-		bacnetWorkers: make(map[string]*bacnetWorker),
-		opcuaWorkers:  make(map[string]*opcuaWorker),
-		mqttWorkers:   make(map[string]*mqttWorker),
+		ctx:               c,
+		cancel:            cancel,
+		modbusWorkers:     make(map[string]*deviceWorker),
+		bacnetWorkers:     make(map[string]*bacnetWorker),
+		opcuaWorkers:      make(map[string]*opcuaWorker),
+		mqttWorkers:       make(map[string]*mqttWorker),
+		mqttWorkerFactory: newMqttWorker,
 	}
 }
 
@@ -142,7 +144,7 @@ func (m *Manager) update(cfg config.IotCfgType) {
 			logInfo("collector restarting MQTT worker", zap.String("deviceSerial", serial))
 		}
 
-		worker := newMqttWorker(m.ctx, spec)
+		worker := m.mqttWorkerFactory(m.ctx, spec)
 		m.mqttWorkers[serial] = worker
 		worker.start()
 	}

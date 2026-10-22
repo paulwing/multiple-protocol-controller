@@ -378,30 +378,47 @@ func parseWritePresentValueResponse(frame []byte, invokeID byte) (bool, error) {
 }
 
 func extractReadPropertyValue(body []byte) ([]byte, error) {
-	if len(body) == 0 {
-		return nil, fmt.Errorf("bacnet: empty ReadProperty ACK body")
-	}
-	openIdx := -1
-	closeIdx := -1
-	for i, b := range body {
-		if b == 0x3e {
-			openIdx = i
-			break
+	// Scalar ReadProperty ACKs contain context fields 0 (object identifier)
+	// and 1 (property identifier), then a tagged application value. Skip the
+	// fields by length: identifiers and values can themselves contain 0x3e/0x3f.
+	offset := 0
+	for field := byte(0); field < 2; field++ {
+		if offset >= len(body) || body[offset]>>4 != field || body[offset]&0x08 == 0 {
+			return nil, fmt.Errorf("bacnet: missing ReadProperty context field %d", field)
 		}
+		length := int(body[offset] & 0x07)
+		offset++
+		if length == 5 {
+			if offset >= len(body) {
+				return nil, fmt.Errorf("bacnet: truncated ReadProperty context field length")
+			}
+			length = int(body[offset])
+			offset++
+		}
+		if (field == 0 && length != 4) || (field == 1 && (length < 1 || length > 4)) {
+			return nil, fmt.Errorf("bacnet: invalid ReadProperty context field %d length", field)
+		}
+		if length > len(body)-offset {
+			return nil, fmt.Errorf("bacnet: truncated ReadProperty context field %d", field)
+		}
+		offset += length
 	}
-	if openIdx < 0 {
+	if offset >= len(body) || body[offset] != 0x3e {
 		return nil, fmt.Errorf("bacnet: opening tag for property value not found")
 	}
-	for i := openIdx + 1; i < len(body); i++ {
-		if body[i] == 0x3f {
-			closeIdx = i
-			break
-		}
+	valueStart := offset + 1
+	_, consumed, err := parseBacnetApplicationValue(body[valueStart:])
+	if err != nil {
+		return nil, err
 	}
-	if closeIdx < 0 || closeIdx <= openIdx+1 {
+	valueEnd := valueStart + consumed
+	if valueEnd >= len(body) || body[valueEnd] != 0x3f {
 		return nil, fmt.Errorf("bacnet: closing tag for property value not found")
 	}
-	return body[openIdx+1 : closeIdx], nil
+	if valueEnd+1 != len(body) {
+		return nil, fmt.Errorf("bacnet: trailing data after scalar property value")
+	}
+	return body[valueStart:valueEnd], nil
 }
 
 func parseBacnetApplicationValue(data []byte) (interface{}, int, error) {
@@ -415,17 +432,27 @@ func parseBacnetApplicationValue(data []byte) (interface{}, int, error) {
 	}
 	length := int(tag & 0x07)
 	offset := 1
+	if tagNumber == 1 {
+		if length > 1 {
+			return nil, 0, fmt.Errorf("bacnet: invalid BOOLEAN value")
+		}
+		return length == 1, offset, nil
+	}
+	if length > 5 {
+		return nil, 0, fmt.Errorf("bacnet: invalid application value length marker")
+	}
 	if length == 5 {
 		if len(data) < 2 {
 			return nil, 0, fmt.Errorf("bacnet: extended length missing")
 		}
 		length = int(data[1])
+		if length >= 254 {
+			return nil, 0, fmt.Errorf("bacnet: unsupported extended application value length")
+		}
 		offset++
 	}
 
 	switch tagNumber {
-	case 1:
-		return length != 0, offset, nil
 	case 2:
 		return parseUnsigned(data, offset, length)
 	case 3:
@@ -467,10 +494,9 @@ func buildBacnetApplicationValue(value interface{}) ([]byte, error) {
 		binary.BigEndian.PutUint32(buf[1:], math.Float32bits(v))
 		return buf, nil
 	case float64:
-		buf := make([]byte, 9)
-		buf[0] = 0x55
-		binary.BigEndian.PutUint64(buf[1:], math.Float64bits(v))
-		return buf, nil
+		raw := make([]byte, 8)
+		binary.BigEndian.PutUint64(raw, math.Float64bits(v))
+		return buildBacnetNumericValue(0x50, raw), nil
 	case int:
 		return buildSignedValue(int64(v))
 	case int8:
@@ -499,19 +525,20 @@ func buildBacnetApplicationValue(value interface{}) ([]byte, error) {
 }
 
 func buildUnsignedValue(v uint64) ([]byte, error) {
-	raw := encodeUint(v)
-	buf := make([]byte, 1+len(raw))
-	buf[0] = 0x20 | byte(len(raw))
-	copy(buf[1:], raw)
-	return buf, nil
+	return buildBacnetNumericValue(0x20, encodeUint(v)), nil
 }
 
 func buildSignedValue(v int64) ([]byte, error) {
-	raw := encodeInt(v)
-	buf := make([]byte, 1+len(raw))
-	buf[0] = 0x30 | byte(len(raw))
-	copy(buf[1:], raw)
-	return buf, nil
+	return buildBacnetNumericValue(0x30, encodeInt(v)), nil
+}
+
+// Numeric payloads are at most eight bytes. Lengths above four use the
+// extended-length marker followed by the payload length, not tag flag bits.
+func buildBacnetNumericValue(tag byte, raw []byte) []byte {
+	if len(raw) <= 4 {
+		return append([]byte{tag | byte(len(raw))}, raw...)
+	}
+	return append([]byte{tag | 0x05, byte(len(raw))}, raw...)
 }
 
 func encodeUint(v uint64) []byte {
@@ -545,7 +572,7 @@ func encodeInt(v int64) []byte {
 }
 
 func parseUnsigned(data []byte, offset int, length int) (interface{}, int, error) {
-	if length < 0 || len(data) < offset+length {
+	if length <= 0 || length > 8 || len(data) < offset+length {
 		return nil, 0, fmt.Errorf("bacnet: invalid unsigned value length")
 	}
 	var value uint64
@@ -556,7 +583,7 @@ func parseUnsigned(data []byte, offset int, length int) (interface{}, int, error
 }
 
 func parseSigned(data []byte, offset int, length int) (interface{}, int, error) {
-	if length <= 0 || len(data) < offset+length {
+	if length <= 0 || length > 8 || len(data) < offset+length {
 		return nil, 0, fmt.Errorf("bacnet: invalid signed value length")
 	}
 	var value int64

@@ -179,7 +179,7 @@ func normalizeBacnetValue(value interface{}, dataType string, explicit bool) (in
 		return utils.CoerceString(value), nil
 	case "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float32", "float64":
 		// 显式点位类型：校验范围并返回精确 Go 类型。
-		return bacnetProtocol.NormalizeValue(value, dataType)
+		return bacnetProtocol.NormalizeValueExplicit(value, dataType)
 	default:
 		return value, nil
 	}

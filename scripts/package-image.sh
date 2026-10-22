@@ -1,3 +1,10 @@
+# Stop on a failed build, archive, or upload; never report the final cleanup as success.
+set -e
+
+# Use this script's checkout for both source metadata and build inputs.
+PACKAGE_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)" || exit 1
+cd "$PACKAGE_ROOT" || exit 1
+
 export GOPROXY=https://goproxy.cn,direct
 export GOSUMDB=sum.golang.google.cn
 
@@ -84,20 +91,30 @@ load_base_image() {
 
 build_image() {
   if [ "$USE_BUILDX" = "true" ]; then
-    docker buildx build --no-cache --pull=false --platform "$IMAGE_PLATFORM" --load --build-arg BASE_IMAGE="$BASE_IMAGE_NAME" -t "$CIMAGE_NAME_TAG" -f ./Dockerfile .
+    docker buildx build --no-cache --pull=false --platform "$IMAGE_PLATFORM" --load --build-arg BASE_IMAGE="$BASE_IMAGE_NAME" --label "org.opencontainers.image.revision=$VCS_REVISION" --label "io.iot.build.dirty=$BUILD_DIRTY" -t "$CIMAGE_NAME_TAG" -f ./Dockerfile .
   else
-    docker build --no-cache --pull=false --platform "$IMAGE_PLATFORM" --build-arg BASE_IMAGE="$BASE_IMAGE_NAME" -t "$CIMAGE_NAME_TAG" -f ./Dockerfile .
+    docker build --no-cache --pull=false --platform "$IMAGE_PLATFORM" --build-arg BASE_IMAGE="$BASE_IMAGE_NAME" --label "org.opencontainers.image.revision=$VCS_REVISION" --label "io.iot.build.dirty=$BUILD_DIRTY" -t "$CIMAGE_NAME_TAG" -f ./Dockerfile .
   fi
 }
 
-#进行git提交信息拉取，生成版本跟踪信息开始
-rm -f version.txt
-GIT_TIME=$(git log -1 | grep 'Date')
-echo "git time:" $GIT_TIME >>version.txt
-echo "git commit:" $GIT_COMMIT >>version.txt
-echo "git no:" $BUILD_NUMBER >>version.txt
-echo "git branch:" $GIT_BRANCH >>version.txt
-#进行git提交信息拉取，生成版本跟踪信息结束
+# Record the source checkout, not possibly stale Jenkins Git variables.
+VCS_REVISION="$(git rev-parse --verify HEAD 2>/dev/null || printf unknown)"
+GIT_TIME="$(git log -1 --format=%cI 2>/dev/null || printf unknown)"
+BUILD_BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf detached)"
+if [ "$VCS_REVISION" = unknown ]; then BUILD_BRANCH=unknown; fi
+# version.txt is generated metadata; it must not make a repeated build dirty.
+if BUILD_STATUS="$(git status --porcelain --untracked-files=normal -- . ':(exclude)version.txt' 2>/dev/null)"; then
+  if [ -n "$BUILD_STATUS" ]; then BUILD_DIRTY=true; else BUILD_DIRTY=false; fi
+else
+  BUILD_DIRTY=unknown
+fi
+{
+  printf 'git time: %s\n' "$GIT_TIME"
+  printf 'git commit: %s\n' "$VCS_REVISION"
+  printf 'git no: %s\n' "${BUILD_NUMBER:-}"
+  printf 'git branch: %s\n' "$BUILD_BRANCH"
+  printf 'git dirty: %s\n' "$BUILD_DIRTY"
+} >version.txt
 
 # 下载依赖前设置好代理
 go mod download

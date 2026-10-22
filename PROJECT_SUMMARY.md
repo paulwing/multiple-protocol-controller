@@ -44,7 +44,9 @@ SubRedisChannel 已订阅 set_device_current_value，并调用 ProcessCommand；
 
 Broker 来自 GatewayInfo；账号密码优先设备 params，连接选项包括 clientId/qos/keepAlive/cleanSession。主题模板支持 {serial}、{deviceId}；属性 topics.subscribe/publish 定义采集和写入。
 
-旧总结中的“只支持三类协议”“实时 key 使用 serial”不再符合当前代码。代码已有 BACnet、按 ID 写 key。MQTT Subscribe 保存 topic handler，但旧总结对消息回调全链路的担忧并未在本轮做专项验证；设备兼容性、消息实际送达和长期连接资源释放仍须实测，不能从静态文档宣称已修复或稳定性验收。
+MQTT 入站由 Paho 匹配 filter，再投递到各 worker 的独立订阅登记；回调携带对应点位组，避免重叠主题随机选择点位。连接按 broker/clientId 共享，最后使用者退出才释放；首次连接、订阅拒绝及断线会重试恢复。订阅等待有界，超时恢复不会中断已有控制发布。配置重载移除旧登记，在线退出先尝试有界退订；离线或退订未确认时不保证清理 broker 持久会话。队列容量与满队列丢弃策略、点位类型和结果写入语义保持原样，不新增持久化、防重或消息补发。
+
+隔离回归使用真实 Paho 与 net.Pipe 报文替身，以及 worker 回调到结果写入的内存测试；覆盖共享订阅、重连、重复重载、订阅拒绝/无回执、停止与进行中发布。实设备兼容性、外部 broker 行为和长期负载仍需部署环境验证。
 
 ## 核对与测试
 

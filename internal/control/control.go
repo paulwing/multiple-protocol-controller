@@ -28,7 +28,16 @@ import (
 
 // ProcessCommand parses raw command payload and dispatches protocol-specific write operations.
 // redisClient is optional: when provided, command result will be published to config.SendCmdResCh.
-func ProcessCommand(redisClient *store.RedisClient, cmd config.Command4MPC) error {
+func ProcessCommand(redisClient *store.RedisClient, cmd config.Command4MPC) (processErr error) {
+	started := time.Now()
+	log := commandLogger(cmd.Uid)
+	defer func() {
+		if processErr != nil {
+			// A batch may have written earlier items before processing stopped.
+			log.Warn("device control", zap.String("stage", "execution_finished"), zap.String("result", "unknown"),
+				zap.String("reason", "processing_error"), zap.Int64("elapsed_ms", time.Since(started).Milliseconds()))
+		}
+	}()
 	cfgVal := config.IotCfgStore.Load()
 	if cfgVal == nil {
 		return errors.New("iot config not loaded")
@@ -42,18 +51,23 @@ func ProcessCommand(redisClient *store.RedisClient, cmd config.Command4MPC) erro
 	var manager *conn.Manager
 
 	for _, item := range cmd.Data {
+		itemStarted := time.Now()
 		serial, _ := item["device_id"].(string)
 		if serial == "" {
-			logger.Log.Warn("command item missing device_id", zap.Any("data", item))
+			log.Warn("device control", zap.String("stage", "device_execution_finished"), zap.String("result", "skipped"),
+				zap.String("reason", "missing_device_id"), zap.Int64("elapsed_ms", time.Since(itemStarted).Milliseconds()))
 			continue
 		}
 		device, exists := cfg.DeviceBySerial[serial]
 		if !exists {
-			logger.Log.Warn("device not found for command", zap.String("serial", serial))
+			log.Warn("device control", zap.String("stage", "device_execution_finished"), zap.String("result", "failed"),
+				zap.String("device_serial", serial), zap.String("reason", "device_not_found"),
+				zap.Int64("elapsed_ms", time.Since(itemStarted).Milliseconds()))
 			dispatchResults = append(dispatchResults, attrDispatchResult{DeviceSerial: serial, Status: commandStatusFailed, Err: errors.New("device not found")})
 			continue
 		}
 
+		resultOffset := len(dispatchResults)
 		switch {
 		case isBacnetProtocol(device.Config.Protocol):
 			dispatchResults = append(dispatchResults, dispatchBacnet(device, item, cfg.DeviceBacnetCmdBySerial[serial])...)
@@ -71,11 +85,37 @@ func ProcessCommand(redisClient *store.RedisClient, cmd config.Command4MPC) erro
 			}
 			dispatchResults = append(dispatchResults, dispatchModbus(manager, device, item, cfg.DeviceCmdBySerial[serial])...)
 		}
+		log.Info("device control", zap.String("stage", "device_execution_finished"),
+			zap.String("result", commandLogResult(dispatchResults[resultOffset:])),
+			zap.String("device_serial", serial), zap.String("device_id", device.Config.ID),
+			zap.Int64("elapsed_ms", time.Since(itemStarted).Milliseconds()))
 	}
 
+	log.Info("device control", zap.String("stage", "execution_finished"),
+		zap.String("result", commandLogResult(dispatchResults)), zap.Int("attribute_count", len(dispatchResults)),
+		zap.Int64("elapsed_ms", time.Since(started).Milliseconds()))
 	publishCommandResults(redisClient, cfg, cmd.Uid, dispatchResults)
 
 	return nil
+}
+
+func commandLogger(uid string) *zap.Logger {
+	log := logger.Log
+	if log == nil {
+		log = zap.NewNop()
+	}
+	return log.With(zap.String("command_id", uid))
+}
+
+func commandLogResult(results []attrDispatchResult) string {
+	if len(results) == 0 {
+		return "no_result"
+	}
+	status := commandStatusVerified
+	for _, result := range results {
+		status = mergeCommandStatus(status, normalizedCommandStatus(result))
+	}
+	return string(status)
 }
 
 func commandKeys(item map[string]interface{}) []string {
@@ -402,7 +442,12 @@ func publishCommandResults(redisClient *store.RedisClient, cfg config.IotCfgType
 	if redisClient == nil || len(results) == 0 {
 		return
 	}
+	publishCommandResultsWith(redisClient.Publish, cfg, uid, results)
+}
 
+func publishCommandResultsWith(publish func(context.Context, string, interface{}) error, cfg config.IotCfgType, uid string, results []attrDispatchResult) {
+	started := time.Now()
+	log := commandLogger(uid)
 	envelope := buildCommandResultEnvelope(cfg, uid, results, time.Now())
 	if len(envelope.Result.Data) == 0 {
 		return
@@ -410,12 +455,17 @@ func publishCommandResults(redisClient *store.RedisClient, cfg config.IotCfgType
 
 	payload, err := json.Marshal(envelope)
 	if err != nil {
-		logger.Log.Warn("marshal command result failed", zap.Error(err))
+		log.Warn("device control", zap.String("stage", "receipt_publish"), zap.String("result", "not_sent"),
+			zap.String("reason", "receipt_encode_error"), zap.Int64("elapsed_ms", time.Since(started).Milliseconds()))
 		return
 	}
-	if err := redisClient.Publish(context.Background(), config.SendCmdResCh, string(payload)); err != nil {
-		logger.Log.Warn("publish command result failed", zap.Error(err))
+	if err := publish(context.Background(), config.SendCmdResCh, string(payload)); err != nil {
+		log.Warn("device control", zap.String("stage", "receipt_publish"), zap.String("result", "unknown"),
+			zap.String("reason", "receipt_publish_error"), zap.Int64("elapsed_ms", time.Since(started).Milliseconds()))
+		return
 	}
+	log.Info("device control", zap.String("stage", "receipt_publish"), zap.String("result", "published"),
+		zap.Int64("elapsed_ms", time.Since(started).Milliseconds()))
 }
 
 func buildCommandResultEnvelope(cfg config.IotCfgType, uid string, results []attrDispatchResult, now time.Time) commandResultEnvelope {

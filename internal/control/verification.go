@@ -315,6 +315,16 @@ func executeModbusWrite(
 	readParam *config.ModbusParam,
 	target any,
 ) commandExecutionResult {
+	// The command already has a timeout, but net.Conn.Write does not observe
+	// its context. Bound the send itself before waiting for the acknowledgement.
+	deadline := time.Now().Add(controlTimeout(device))
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := netConn.SetWriteDeadline(deadline); err != nil {
+		return commandExecutionResult{Status: commandStatusFailed, Err: err}
+	}
+	defer netConn.SetWriteDeadline(time.Time{})
 	if _, err := netConn.Write(frame); err != nil {
 		return commandExecutionResult{Status: commandStatusFailed, Err: err}
 	}

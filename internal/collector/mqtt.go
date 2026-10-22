@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -49,21 +50,28 @@ func isMqttDevice(proto string) bool {
 
 // mqttWorker MQTT 采集 worker
 type mqttWorker struct {
-	spec   mqttSpec
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{}
-	msgCh  chan conn.MqttMessage
+	spec      mqttSpec
+	ctx       context.Context
+	cancel    context.CancelFunc
+	done      chan struct{}
+	msgCh     chan mqttDelivery
+	subscribe func(context.Context, conn.MqttConfig, string, byte, conn.MessageHandler) (func(), error)
+}
+
+type mqttDelivery struct {
+	message conn.MqttMessage
+	params  []config.MqttParam
 }
 
 func newMqttWorker(parent context.Context, spec mqttSpec) *mqttWorker {
 	ctx, cancel := context.WithCancel(parent)
 	return &mqttWorker{
-		spec:   spec,
-		ctx:    ctx,
-		cancel: cancel,
-		done:   make(chan struct{}),
-		msgCh:  make(chan conn.MqttMessage, 10),
+		spec:      spec,
+		ctx:       ctx,
+		cancel:    cancel,
+		done:      make(chan struct{}),
+		msgCh:     make(chan mqttDelivery, 10),
+		subscribe: conn.DefaultMqttManager().Watch,
 	}
 }
 
@@ -90,15 +98,6 @@ func (w *mqttWorker) run() {
 		CleanSession: w.spec.Device.MqttCleanSession,
 	}
 
-	// 连接到 MQTT Broker
-	mgr := conn.DefaultMqttManager()
-	if err := mgr.Connect(mqttCfg); err != nil {
-		logInfo("mqtt connect failed",
-			zap.String("deviceSerial", w.spec.Device.Config.SerialNumber),
-			zap.Error(err))
-		return
-	}
-
 	// 收集所有需要订阅的主题
 	topicParams := make(map[string][]config.MqttParam)
 	for _, param := range w.spec.Params {
@@ -112,78 +111,81 @@ func (w *mqttWorker) run() {
 		topicParams[topic] = append(topicParams[topic], param)
 	}
 
-	// 创建消息处理函数
-	handler := func(topic string, payload []byte) {
-		select {
-		case w.msgCh <- conn.MqttMessage{Topic: topic, Payload: payload}:
-		default:
-			logInfo("mqtt message channel full",
-				zap.String("deviceSerial", w.spec.Device.Config.SerialNumber))
+	// Each callback carries its own configured mapping. Paho has already
+	// matched the topic filter; matching again loses overlapping point groups.
+	var releases []func()
+	defer func() {
+		for _, release := range releases {
+			release()
 		}
-	}
-
-	// 订阅所有主题
+	}()
 	for topic, params := range topicParams {
 		qos := params[0].Qos
 		if qos == 0 {
 			qos = mqttCfg.Qos
 		}
-		if err := mgr.Subscribe(mqttCfg, topic, qos, handler); err != nil {
-			logInfo("mqtt subscribe failed",
-				zap.String("deviceSerial", w.spec.Device.Config.SerialNumber),
-				zap.String("topic", topic),
-				zap.Error(err))
+		handler := func(actualTopic string, payload []byte) {
+			if w.ctx.Err() != nil {
+				return
+			}
+			select {
+			case w.msgCh <- mqttDelivery{message: conn.MqttMessage{Topic: actualTopic, Payload: payload}, params: params}:
+			default:
+				logInfo("mqtt message channel full", zap.String("deviceSerial", w.spec.Device.Config.SerialNumber))
+			}
+		}
+		release, err := w.subscribeAfterConfigHandoff(mqttCfg, topic, qos, handler)
+		if err != nil {
+			if w.ctx.Err() != nil {
+				return
+			}
+			logInfo("mqtt subscription registration failed", zap.String("deviceSerial", w.spec.Device.Config.SerialNumber), zap.String("topic", topic), zap.Error(err))
 			continue
 		}
-		logInfo("mqtt subscribed",
-			zap.String("deviceSerial", w.spec.Device.Config.SerialNumber),
-			zap.String("topic", topic))
+		releases = append(releases, release)
 	}
-
-	// 启动消息处理循环
-	interval := time.Duration(w.spec.Device.Config.AcqFreq) * time.Millisecond
-	if interval <= 0 {
-		interval = time.Second
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
 	for {
 		select {
-		case <-ticker.C:
-			// 定期检查连接状态
-			if err := mgr.Connect(mqttCfg); err != nil {
-				logInfo("mqtt reconnect failed",
-					zap.String("deviceSerial", w.spec.Device.Config.SerialNumber),
-					zap.Error(err))
+		case delivery := <-w.msgCh:
+			if w.ctx.Err() != nil {
+				return
 			}
-		case msg := <-w.msgCh:
-			w.handleMessage(msg, topicParams)
+			w.handleMessage(delivery.message, delivery.params)
 		case <-w.ctx.Done():
-			// 取消订阅并断开连接
-			for topic := range topicParams {
-				_ = mgr.Unsubscribe(mqttCfg, topic)
-			}
-			_ = mgr.Disconnect(mqttCfg)
 			return
 		}
 	}
 }
 
-func (w *mqttWorker) handleMessage(msg conn.MqttMessage, topicParams map[string][]config.MqttParam) {
-	// 找到对应的参数
-	var params []config.MqttParam
-	for topic, ps := range topicParams {
-		if matchTopic(msg.Topic, topic) {
-			params = ps
-			break
+// A reload starts each replacement worker independently. Other old workers or
+// an in-flight control publish may still own the previous connection options.
+// Wait for that handoff without owning, replacing or publishing on the old
+// connection. A genuinely inconsistent configuration remains a conflict.
+func (w *mqttWorker) subscribeAfterConfigHandoff(cfg conn.MqttConfig, topic string, qos byte, handler conn.MessageHandler) (func(), error) {
+	waiting := false
+	for {
+		if err := w.ctx.Err(); err != nil {
+			return nil, err
+		}
+		release, err := w.subscribe(w.ctx, cfg, topic, qos, handler)
+		if !errors.Is(err, conn.ErrMqttConnectionConfigConflict) {
+			return release, err
+		}
+		if !waiting {
+			logInfo("mqtt waiting for shared connection configuration", zap.String("deviceSerial", w.spec.Device.Config.SerialNumber), zap.String("topic", topic))
+			waiting = true
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-w.ctx.Done():
+			timer.Stop()
+			return nil, w.ctx.Err()
+		case <-timer.C:
 		}
 	}
+}
 
-	if len(params) == 0 {
-		return
-	}
-
+func (w *mqttWorker) handleMessage(msg conn.MqttMessage, params []config.MqttParam) {
 	// 解析消息
 	for _, param := range params {
 		parse := conn.ParseMqttPayload
@@ -535,30 +537,6 @@ func toBool(v interface{}) (bool, error) {
 	default:
 		return false, fmt.Errorf("cannot convert %T to bool", v)
 	}
-}
-
-func matchTopic(topic string, pattern string) bool {
-	patternParts := strings.Split(pattern, "/")
-	topicParts := strings.Split(topic, "/")
-
-	if len(patternParts) != len(topicParts) {
-		for _, part := range patternParts {
-			if part == "#" {
-				return true
-			}
-		}
-		return false
-	}
-
-	for i, part := range patternParts {
-		if part == "+" || part == "#" {
-			continue
-		}
-		if part != topicParts[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // recordCollectedMqttValue 记录采集的 MQTT 数据

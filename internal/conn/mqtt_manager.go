@@ -2,7 +2,9 @@ package conn
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -10,12 +12,10 @@ import (
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"multiple-protocol-controller/pkg/logger"
-
 	"go.uber.org/zap"
+	"multiple-protocol-controller/pkg/logger"
 )
 
-// MqttConfig MQTT 连接配置
 type MqttConfig struct {
 	Broker       string
 	ClientID     string
@@ -26,29 +26,50 @@ type MqttConfig struct {
 	CleanSession bool
 }
 
-// MqttMessage MQTT 消息
 type MqttMessage struct {
 	Topic   string
 	Payload []byte
 	Qos     byte
 }
 
-// MessageHandler MQTT 消息处理函数
 type MessageHandler func(topic string, payload []byte)
 
-// MqttManager MQTT 连接管理器
+// ErrMqttConnectionConfigConflict can be temporary while collectors hand a
+// shared connection over to a new configuration. A failed Watch owns nothing.
+var ErrMqttConnectionConfigConflict = errors.New("mqtt: conflicting connection options for broker/client ID")
+
+// MqttManager shares a connection, but never shares ownership of a subscription.
+// Paho matches topic filters; each route fans out only to its current owners.
 type MqttManager struct {
-	mu          sync.RWMutex
-	clients     map[string]*MqttClient
-	messageCh   chan MqttMessage
-	handlers    map[string]MessageHandler
-	subChannels map[string]map[string]chan MqttMessage
+	mu               sync.Mutex
+	clients          map[string]*MqttClient
+	closed           bool
+	newClient        func(*mqtt.ClientOptions) mqtt.Client
+	retryInterval    time.Duration
+	operationTimeout time.Duration
+	cleanupTimeout   time.Duration
 }
 
 type MqttClient struct {
-	cfg      MqttConfig
-	client   mqtt.Client
-	handlers map[string]MessageHandler
+	cfg           MqttConfig
+	client        mqtt.Client
+	ctx           context.Context
+	cancel        context.CancelFunc
+	done          chan struct{}
+	wake          chan struct{}
+	filters       map[string]map[*mqttSubscription]byte
+	applied       map[string]byte
+	generation    uint64
+	publishes     int
+	restarting    bool
+	operationDone <-chan struct{}
+}
+
+type mqttSubscription struct {
+	mu          sync.Mutex
+	active      bool
+	handler     MessageHandler
+	stopContext func() bool
 }
 
 var mqttDefaultHolder struct {
@@ -56,7 +77,6 @@ var mqttDefaultHolder struct {
 	mgr *MqttManager
 }
 
-// DefaultMqttManager 获取默认 MQTT 管理器
 func DefaultMqttManager() *MqttManager {
 	mqttDefaultHolder.mu.Lock()
 	defer mqttDefaultHolder.mu.Unlock()
@@ -66,291 +86,480 @@ func DefaultMqttManager() *MqttManager {
 	return mqttDefaultHolder.mgr
 }
 
-// NewMqttManager 创建新的 MQTT 管理器
+// bufferSize is retained for constructor compatibility. Workers own their bounded
+// queues; there is no second, unconsumed manager message queue.
 func NewMqttManager(bufferSize int) *MqttManager {
-	mgr := &MqttManager{
-		clients:     make(map[string]*MqttClient),
-		messageCh:   make(chan MqttMessage, bufferSize),
-		handlers:    make(map[string]MessageHandler),
-		subChannels: make(map[string]map[string]chan MqttMessage),
-	}
-	// 启动消息分发协程
-	go mgr.dispatchMessages()
-	return mgr
+	return &MqttManager{clients: make(map[string]*MqttClient), newClient: mqtt.NewClient, retryInterval: time.Second, operationTimeout: 5 * time.Second, cleanupTimeout: time.Second}
 }
 
-// dispatchMessages 分发消息到订阅者
-func (m *MqttManager) dispatchMessages() {
-	for msg := range m.messageCh {
-		m.mu.RLock()
-		// 查找匹配的订阅者
-		for topic, chans := range m.subChannels {
-			if matchTopic(msg.Topic, topic) {
-				for _, ch := range chans {
-					select {
-					case ch <- msg:
-					default:
-						// 通道满，跳过
+// Watch registers one independent owner and returns an idempotent release.
+// Registration does not wait for the network. Connection and subscription
+// failures are retried until the owner releases or ctx is cancelled.
+// Handlers must return promptly (the collector only enqueues a message).
+func (m *MqttManager) Watch(ctx context.Context, cfg MqttConfig, topic string, qos byte, handler MessageHandler) (func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(cfg.Broker) == "" {
+		return nil, fmt.Errorf("mqtt: broker address missing")
+	}
+	if topic == "" || qos > 2 || handler == nil {
+		return nil, fmt.Errorf("mqtt: invalid subscription")
+	}
+	key := mqttClientKey(cfg)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		m.mu.Lock()
+		if m.closed {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("mqtt: manager closed")
+		}
+		entry := m.clients[key]
+		if entry != nil && entry.ctx.Err() != nil {
+			done := entry.done
+			m.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-done:
+			}
+			continue
+		}
+		start := entry == nil
+		if start {
+			entry = m.newEntry(cfg)
+			m.clients[key] = entry
+		} else if entry.cfg.Username != cfg.Username || entry.cfg.Password != cfg.Password || entry.cfg.KeepAlive != cfg.KeepAlive || entry.cfg.CleanSession != cfg.CleanSession {
+			m.mu.Unlock()
+			return nil, ErrMqttConnectionConfigConflict
+		}
+		subscription := &mqttSubscription{active: true, handler: handler}
+		if entry.filters[topic] == nil {
+			entry.filters[topic] = make(map[*mqttSubscription]byte)
+			// Install before Connect: persistent sessions can deliver before SUBACK.
+			entry.client.AddRoute(topic, m.route(entry, topic))
+		}
+		entry.filters[topic][subscription] = qos
+		m.mu.Unlock()
+		if start {
+			go m.run(entry)
+		}
+		m.signal(entry)
+
+		var releaseOnce sync.Once
+		release := func() {
+			releaseOnce.Do(func() {
+				subscription.deactivate()
+				m.mu.Lock()
+				delete(entry.filters[topic], subscription)
+				m.releaseUnused(entry)
+				m.mu.Unlock()
+				m.signal(entry)
+			})
+		}
+		stop := context.AfterFunc(ctx, release)
+		subscription.mu.Lock()
+		if subscription.active {
+			subscription.stopContext = stop
+		} else {
+			stop()
+		}
+		subscription.mu.Unlock()
+		return release, nil
+	}
+}
+
+func (s *mqttSubscription) deactivate() {
+	s.mu.Lock()
+	s.active = false
+	s.handler = nil
+	stop := s.stopContext
+	s.stopContext = nil
+	s.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+}
+
+func (m *MqttManager) newEntry(cfg MqttConfig) *MqttClient {
+	ctx, cancel := context.WithCancel(context.Background())
+	entry := &MqttClient{cfg: cfg, ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1), filters: make(map[string]map[*mqttSubscription]byte), applied: make(map[string]byte)}
+	entry.client = m.makeClient(entry)
+	return entry
+}
+
+func (m *MqttManager) makeClient(entry *MqttClient) mqtt.Client {
+	cfg := entry.cfg
+	opts := mqtt.NewClientOptions().AddBroker(cfg.Broker).SetClientID(cfg.ClientID).
+		SetUsername(cfg.Username).SetPassword(cfg.Password).SetCleanSession(cfg.CleanSession).
+		SetKeepAlive(time.Duration(cfg.KeepAlive) * time.Second).
+		SetAutoReconnect(true).SetConnectRetry(true).SetConnectRetryInterval(m.retryInterval).
+		SetConnectTimeout(5 * time.Second).
+		SetDefaultPublishHandler(func(mqtt.Client, mqtt.Message) {}).
+		SetOnConnectHandler(func(c mqtt.Client) {
+			m.mu.Lock()
+			if entry.ctx.Err() == nil && entry.client == c {
+				entry.restarting = false
+				entry.generation++
+				entry.applied = make(map[string]byte)
+			}
+			m.mu.Unlock()
+			m.signal(entry)
+		}).SetConnectionLostHandler(func(_ mqtt.Client, err error) {
+		m.logFailure(entry, "mqtt connection lost", err)
+		m.signal(entry)
+	})
+	return m.newClient(opts)
+}
+
+func (m *MqttManager) signal(entry *MqttClient) {
+	select {
+	case entry.wake <- struct{}{}:
+	default:
+	}
+}
+
+// The single reconciliation loop serializes broker subscription changes. Its
+// waits are cancellable and never hold the manager lock. An unacknowledged
+// operation stays in flight instead of accumulating a token on every retry tick.
+func (m *MqttManager) run(entry *MqttClient) {
+	defer func() {
+		m.cleanupSubscriptions(entry)
+		entry.client.Disconnect(250)
+		m.mu.Lock()
+		if m.clients[mqttClientKey(entry.cfg)] == entry {
+			delete(m.clients, mqttClientKey(entry.cfg))
+		}
+		close(entry.done)
+		m.mu.Unlock()
+	}()
+	if entry.ctx.Err() != nil {
+		return
+	}
+	if err := m.connect(entry); err != nil {
+		return
+	}
+	ticker := time.NewTicker(m.retryInterval)
+	defer ticker.Stop()
+	restart := false
+	for {
+		if entry.ctx.Err() != nil {
+			return
+		}
+		if restart {
+			m.mu.Lock()
+			canRestart := entry.publishes == 0
+			var oldClient mqtt.Client
+			if canRestart {
+				entry.restarting = true
+				oldClient = entry.client
+				entry.client = m.makeClient(entry)
+				entry.applied = make(map[string]byte)
+				for topic, owners := range entry.filters {
+					if len(owners) != 0 {
+						entry.client.AddRoute(topic, m.route(entry, topic))
+					}
+				}
+			}
+			m.mu.Unlock()
+			if canRestart {
+				// Install the new identity before disconnecting. A late OnConnect
+				// from the old client must not admit a publish into this window.
+				oldClient.Disconnect(250)
+				if err := m.connect(entry); err != nil {
+					return
+				}
+				restart = false
+			}
+		} else if entry.client.IsConnectionOpen() {
+			if err := m.reconcile(entry); err != nil && entry.ctx.Err() == nil {
+				m.logFailure(entry, "mqtt subscription retry pending", err)
+				restart = errors.Is(err, context.DeadlineExceeded)
+			}
+		}
+		select {
+		case <-entry.ctx.Done():
+			return
+		case <-entry.wake:
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *MqttManager) connect(entry *MqttClient) error {
+	if err := entry.ctx.Err(); err != nil {
+		return err
+	}
+	token := entry.client.Connect()
+	select {
+	case <-entry.ctx.Done():
+		return entry.ctx.Err()
+	case <-token.Done():
+		return token.Error()
+	}
+}
+
+// Paho's Subscribe/Unsubscribe can themselves wait for an outgoing slot. Keep
+// that call outside the reconciliation goroutine so cancellation remains prompt.
+// There is only one operation in flight per connection; timeout forces a fresh
+// client before another operation is issued.
+func mqttToken(ctx context.Context, start func() mqtt.Token) (mqtt.Token, <-chan struct{}, error) {
+	done := make(chan struct{})
+	if err := ctx.Err(); err != nil {
+		close(done)
+		return nil, done, err
+	}
+	result := make(chan mqtt.Token, 1)
+	go func() { defer close(done); result <- start() }()
+	select {
+	case <-ctx.Done():
+		return nil, done, ctx.Err()
+	case token := <-result:
+		return token, done, nil
+	}
+}
+
+func (m *MqttManager) cleanupSubscriptions(entry *MqttClient) {
+	if !entry.client.IsConnectionOpen() {
+		return
+	}
+	m.mu.Lock()
+	topics := make([]string, 0, len(entry.filters))
+	for topic := range entry.filters {
+		topics = append(topics, topic)
+	}
+	m.mu.Unlock()
+	if len(topics) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), m.cleanupTimeout)
+	defer cancel()
+	// A cancelled caller can leave Subscribe waiting for Paho's outgoing slot.
+	// Establish its send order before final Unsubscribe, within one cleanup budget.
+	if entry.operationDone != nil {
+		select {
+		case <-entry.operationDone:
+		case <-ctx.Done():
+			m.logFailure(entry, "mqtt final unsubscribe incomplete", ctx.Err())
+			return
+		}
+	}
+	token, _, err := mqttToken(ctx, func() mqtt.Token { return entry.client.Unsubscribe(topics...) })
+	if err == nil {
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+		case <-token.Done():
+			err = token.Error()
+		}
+	}
+	if err != nil {
+		m.logFailure(entry, "mqtt final unsubscribe incomplete", err)
+	}
+}
+
+func (m *MqttManager) reconcile(entry *MqttClient) error {
+	m.mu.Lock()
+	generation := entry.generation
+	topics := make([]string, 0, len(entry.filters))
+	for topic := range entry.filters {
+		topics = append(topics, topic)
+	}
+	m.mu.Unlock()
+	if generation == 0 {
+		return nil
+	} // OnConnect has not published its state yet.
+	for _, topic := range topics {
+		if entry.ctx.Err() != nil {
+			return entry.ctx.Err()
+		}
+		m.mu.Lock()
+		owners, exists := entry.filters[topic]
+		var qos byte
+		for _, requested := range owners {
+			if requested > qos {
+				qos = requested
+			}
+		}
+		remove := len(owners) == 0
+		applied, subscribed := entry.applied[topic]
+		unchanged := !remove && subscribed && applied == qos
+		m.mu.Unlock()
+		if !exists || unchanged {
+			continue
+		}
+		opCtx, cancel := context.WithTimeout(entry.ctx, m.operationTimeout)
+		client := entry.client
+		token, methodDone, err := mqttToken(opCtx, func() mqtt.Token {
+			if remove {
+				return client.Unsubscribe(topic)
+			}
+			return client.Subscribe(topic, qos, m.route(entry, topic))
+		})
+		entry.operationDone = methodDone
+		if err == nil {
+			err = m.waitSubscription(opCtx, entry, token, generation)
+		}
+		cancel()
+		if err != nil {
+			return err
+		}
+		if !remove {
+			if result, ok := token.(*mqtt.SubscribeToken); ok {
+				for _, code := range result.Result() {
+					if code == 0x80 {
+						return fmt.Errorf("broker rejected subscription %q", topic)
 					}
 				}
 			}
 		}
-		m.mu.RUnlock()
-	}
-}
-
-// matchTopic 检查主题是否匹配 (支持 + 和 # 通配符)
-func matchTopic(topic string, pattern string) bool {
-	// 简单实现：支持 + 单层通配符
-	patternParts := strings.Split(pattern, "/")
-	topicParts := strings.Split(topic, "/")
-
-	if len(patternParts) != len(topicParts) {
-		// 检查是否有 # 通配符
-		for _, part := range patternParts {
-			if part == "#" {
-				return true
+		m.mu.Lock()
+		if entry.generation == generation {
+			if remove {
+				delete(entry.applied, topic)
+				if len(entry.filters[topic]) == 0 {
+					delete(entry.filters, topic)
+				}
+			} else {
+				entry.applied[topic] = qos
 			}
 		}
-		return false
-	}
-
-	for i, part := range patternParts {
-		if part == "+" || part == "#" {
-			continue
-		}
-		if part != topicParts[i] {
-			return false
+		changed := entry.generation != generation
+		m.mu.Unlock()
+		if changed {
+			return nil
 		}
 	}
-	return true
-}
-
-// Connect 连接到 MQTT Broker
-func (m *MqttManager) Connect(cfg MqttConfig) error {
-	if strings.TrimSpace(cfg.Broker) == "" {
-		return fmt.Errorf("mqtt: broker address missing")
-	}
-
-	key := mqttClientKey(cfg)
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if client, ok := m.clients[key]; ok && client.client.IsConnected() {
-		return nil
-	}
-
-	opts := mqtt.NewClientOptions().
-		AddBroker(cfg.Broker).
-		SetClientID(cfg.ClientID).
-		SetUsername(cfg.Username).
-		SetPassword(cfg.Password).
-		SetCleanSession(cfg.CleanSession).
-		SetKeepAlive(time.Duration(cfg.KeepAlive) * time.Second).
-		SetAutoReconnect(true).
-		SetOnConnectHandler(func(c mqtt.Client) {
-			logger.Log.Info("mqtt connected", zap.String("broker", cfg.Broker), zap.String("clientId", cfg.ClientID))
-		}).
-		SetConnectionLostHandler(func(c mqtt.Client, err error) {
-			logger.Log.Warn("mqtt connection lost", zap.String("broker", cfg.Broker), zap.Error(err))
-		})
-
-	client := mqtt.NewClient(opts)
-	token := client.Connect()
-	if token.Wait() && token.Error() != nil {
-		return fmt.Errorf("mqtt connect failed: %w", token.Error())
-	}
-
-	m.clients[key] = &MqttClient{
-		cfg:      cfg,
-		client:   client,
-		handlers: make(map[string]MessageHandler),
-	}
-
 	return nil
 }
 
-// Subscribe 订阅主题
-func (m *MqttManager) Subscribe(cfg MqttConfig, topic string, qos byte, handler MessageHandler) error {
-	key := mqttClientKey(cfg)
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	client, ok := m.clients[key]
-	if !ok || !client.client.IsConnected() {
-		return fmt.Errorf("mqtt: client not connected")
-	}
-
-	// 注册消息处理函数
-	client.handlers[topic] = handler
-
-	// 创建专用通道
-	ch := make(chan MqttMessage, 10)
-	if _, ok := m.subChannels[key]; !ok {
-		m.subChannels[key] = make(map[string]chan MqttMessage)
-	}
-	m.subChannels[key][topic] = ch
-
-	// 订阅主题
-	token := client.client.Subscribe(topic, qos, func(c mqtt.Client, msg mqtt.Message) {
-		m.messageCh <- MqttMessage{
-			Topic:   msg.Topic(),
-			Payload: msg.Payload(),
-			Qos:     msg.Qos(),
+func (m *MqttManager) waitSubscription(ctx context.Context, entry *MqttClient, token mqtt.Token, generation uint64) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-token.Done():
+			return token.Error()
+		case <-entry.wake:
+			m.mu.Lock()
+			changed := entry.generation != generation
+			m.mu.Unlock()
+			if changed {
+				return fmt.Errorf("mqtt: connection changed during subscription")
+			}
 		}
-	})
-	if token.Wait() && token.Error() != nil {
-		return fmt.Errorf("mqtt subscribe failed: %w", token.Error())
 	}
-
-	return nil
 }
 
-// Publish 发布消息
+func (m *MqttManager) route(entry *MqttClient, topic string) mqtt.MessageHandler {
+	return func(client mqtt.Client, msg mqtt.Message) {
+		m.mu.Lock()
+		owners := make([]*mqttSubscription, 0, len(entry.filters[topic]))
+		if entry.ctx.Err() == nil && entry.client == client {
+			for owner := range entry.filters[topic] {
+				owners = append(owners, owner)
+			}
+		}
+		m.mu.Unlock()
+		for _, owner := range owners {
+			owner.mu.Lock()
+			if owner.active {
+				owner.handler(msg.Topic(), append([]byte(nil), msg.Payload()...))
+			}
+			owner.mu.Unlock()
+		}
+	}
+}
+
+// Called with m.mu held. A running control publish pins the same connection;
+// releasing the last collector must not interrupt its existing token.Wait.
+func (m *MqttManager) releaseUnused(entry *MqttClient) {
+	if entry.publishes != 0 {
+		return
+	}
+	for _, owners := range entry.filters {
+		if len(owners) != 0 {
+			return
+		}
+	}
+	entry.cancel()
+}
+
 func (m *MqttManager) Publish(cfg MqttConfig, topic string, payload []byte, qos byte) error {
-	key := mqttClientKey(cfg)
-
-	m.mu.RLock()
-	client, ok := m.clients[key]
-	m.mu.RUnlock()
-
-	if !ok || !client.client.IsConnected() {
+	m.mu.Lock()
+	entry := m.clients[mqttClientKey(cfg)]
+	if entry == nil || entry.ctx.Err() != nil || entry.generation == 0 || entry.restarting || !entry.client.IsConnected() {
+		m.mu.Unlock()
 		return fmt.Errorf("mqtt: client not connected")
 	}
-
-	token := client.client.Publish(topic, qos, false, payload)
+	entry.publishes++
+	m.mu.Unlock()
+	defer func() { m.mu.Lock(); entry.publishes--; m.releaseUnused(entry); m.mu.Unlock() }()
+	token := entry.client.Publish(topic, qos, false, payload)
 	if token.Wait() && token.Error() != nil {
 		return fmt.Errorf("mqtt publish failed: %w", token.Error())
 	}
-
 	return nil
 }
 
-// SubscribeAndWait 订阅主题并等待消息（用于同步采集）
 func (m *MqttManager) SubscribeAndWait(cfg MqttConfig, topic string, qos byte, timeout time.Duration) ([]byte, error) {
-	key := mqttClientKey(cfg)
-
-	// 确保连接
-	m.mu.RLock()
-	client, ok := m.clients[key]
-	m.mu.RUnlock()
-
-	if !ok || !client.client.IsConnected() {
-		return nil, fmt.Errorf("mqtt: client not connected")
-	}
-
-	// 创建专用通道
-	ch := make(chan MqttMessage, 1)
-	defer func() {
-		m.mu.Lock()
-		if channels, exists := m.subChannels[key]; exists {
-			delete(channels, topic)
-		}
-		m.mu.Unlock()
-		close(ch)
-	}()
-
-	// 临时订阅
-	token := client.client.Subscribe(topic, qos, func(c mqtt.Client, msg mqtt.Message) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ch := make(chan []byte, 1)
+	release, err := m.Watch(ctx, cfg, topic, qos, func(_ string, payload []byte) {
 		select {
-		case ch <- MqttMessage{
-			Topic:   msg.Topic(),
-			Payload: msg.Payload(),
-			Qos:     msg.Qos(),
-		}:
+		case ch <- payload:
 		default:
 		}
 	})
-	if token.Wait() && token.Error() != nil {
-		return nil, fmt.Errorf("mqtt subscribe failed: %w", token.Error())
+	if err != nil {
+		return nil, err
 	}
-
-	// 等待消息或超时
+	defer release()
 	select {
-	case msg := <-ch:
-		return msg.Payload, nil
-	case <-time.After(timeout):
+	case payload := <-ch:
+		return payload, nil
+	case <-ctx.Done():
 		return nil, fmt.Errorf("mqtt: timeout waiting for message")
 	}
 }
 
-// Unsubscribe 取消订阅
-func (m *MqttManager) Unsubscribe(cfg MqttConfig, topic string) error {
-	key := mqttClientKey(cfg)
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	client, ok := m.clients[key]
-	if !ok || !client.client.IsConnected() {
-		return nil
-	}
-
-	token := client.client.Unsubscribe(topic)
-	if token.Wait() && token.Error() != nil {
-		return fmt.Errorf("mqtt unsubscribe failed: %w", token.Error())
-	}
-
-	// 清理
-	delete(client.handlers, topic)
-	if channels, exists := m.subChannels[key]; exists {
-		if ch, ok := channels[topic]; ok {
-			close(ch)
-			delete(channels, topic)
-		}
-	}
-
-	return nil
-}
-
-// Disconnect 断开连接
-func (m *MqttManager) Disconnect(cfg MqttConfig) error {
-	key := mqttClientKey(cfg)
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	client, ok := m.clients[key]
-	if !ok {
-		return nil
-	}
-
-	if client.client.IsConnected() {
-		client.client.Disconnect(250)
-	}
-
-	delete(m.clients, key)
-	if channels, exists := m.subChannels[key]; exists {
-		for _, ch := range channels {
-			close(ch)
-		}
-		delete(m.subChannels, key)
-	}
-
-	return nil
-}
-
-// Close 关闭管理器
 func (m *MqttManager) Close() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	for key, client := range m.clients {
-		if client.client.IsConnected() {
-			client.client.Disconnect(250)
+	m.closed = true
+	entries := make([]*MqttClient, 0, len(m.clients))
+	var subscriptions []*mqttSubscription
+	for _, entry := range m.clients {
+		entries = append(entries, entry)
+		entry.cancel()
+		for _, owners := range entry.filters {
+			for owner := range owners {
+				subscriptions = append(subscriptions, owner)
+			}
 		}
-		delete(m.clients, key)
+		for topic := range entry.filters {
+			entry.filters[topic] = make(map[*mqttSubscription]byte)
+		}
 	}
-
-	close(m.messageCh)
+	m.mu.Unlock()
+	for _, subscription := range subscriptions {
+		subscription.deactivate()
+	}
+	for _, entry := range entries {
+		<-entry.done
+	}
 	return nil
 }
 
-// mqttClientKey 生成客户端唯一标识
-func mqttClientKey(cfg MqttConfig) string {
-	return fmt.Sprintf("%s|%s", cfg.Broker, cfg.ClientID)
+func (m *MqttManager) logFailure(entry *MqttClient, message string, err error) {
+	if logger.Log != nil {
+		logger.Log.Warn(message, zap.String("broker", entry.cfg.Broker), zap.String("clientId", entry.cfg.ClientID), zap.Error(err))
+	}
 }
+
+func mqttClientKey(cfg MqttConfig) string { return fmt.Sprintf("%s|%s", cfg.Broker, cfg.ClientID) }
 
 // ParseMqttPayload 解析 MQTT 消息载荷，支持 JSON 和纯文本
 func ParseMqttPayload(payload []byte, path string) (interface{}, error) {

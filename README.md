@@ -118,6 +118,12 @@ Current runtime keys:
 
 Property-level protocol configuration is not read from `params`. It is read from each property's `protocol` field, such as Modbus function code and address, OPC UA `nodeId`, MQTT topic/path, and BACnet object configuration.
 
+MQTT 采集按 broker/clientId 共享连接，每个 worker 独立登记订阅；同一 filter 可服务多个设备，配置重载只释放该 worker 的登记。Paho 负责主题匹配，每条订阅映射仍按自己的 path/dataType 写入。首次连接失败、订阅拒绝和断线后会恢复当前有效订阅；订阅等待超时会在没有进行中控制发布时重建连接。采集队列仍为 10 条，满队列保留原丢弃并记录日志的行为，不提供消息持久化或补发。
+
+最后一个采集使用者退出时，连接在已有控制发布结束后释放；当前连接可用时会先尝试有界退订。`cleanSession=false` 且退出时离线或退订未确认，broker 的持久会话可能保留旧订阅，MPC 不提供跨退出清理补偿。相同 broker/clientId 的账号、keepAlive、cleanSession 必须一致；点位 QoS 为 0 时仍继承设备默认 QoS，共享 filter 使用有效订阅请求的最高 QoS。
+
+共享连接更新参数时，新采集任务遇到仍在使用旧参数的连接，会每秒重试登记，直到旧任务和已有控制发布释放连接；停止任务会取消等待。只重试连接参数冲突，不抢占旧连接、不重发控制命令；若配置本身一直相互冲突，也不会强行覆盖其他任务的连接。
+
 ### History Data
 
 MPC can write collected property values to InfluxDB for historical queries.

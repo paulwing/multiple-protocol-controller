@@ -3,6 +3,7 @@ package control
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"testing"
 
 	"multiple-protocol-controller/internal/config"
@@ -94,5 +95,123 @@ func TestBackendHTTPContractArtifactBuildsExpectedRuntimeTypes(t *testing.T) {
 	}
 	if got, ok := value.(int64); !ok || got != 9007199254740993 {
 		t.Fatalf("normalized int64 = %#v, want 9007199254740993", value)
+	}
+}
+
+func TestBackendHTTPContractCasesBuildFourProtocolRuntimeTypes(t *testing.T) {
+	const dir = "../../../documents/integration/datatype-contract"
+	if _, err := os.Stat(dir); err != nil {
+		t.Skip("workspace contract artifacts are unavailable; see documents/integration/datatype-contract/README.md")
+	}
+	raw, err := os.ReadFile(dir + "/product-create-cases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name     string `json:"name"`
+		Status   int    `json:"status"`
+		Response struct {
+			Code int `json:"code"`
+			Data struct {
+				Protocol   string            `json:"protocol"`
+				Properties []config.Property `json:"properties"`
+			} `json:"data"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	wants := map[string]struct {
+		protocol string
+		read     []string
+		write    []string
+		explicit bool
+	}{
+		"modbus-fc06-registers": {"modbus_rtu", []string{"uint16"}, []string{"int16", "uint16"}, true},
+		"bacnet-explicit":       {"bacnet", []string{"int32"}, []string{"float64"}, true},
+		"opcua-explicit":        {"opcua", []string{"int64"}, []string{"bool"}, true},
+		"mqtt-explicit":         {"mqtt", []string{"float64"}, []string{"string"}, true},
+		"opcua-legacy":          {"opcua", []string{"float"}, []string{"float"}, false},
+	}
+	seen := map[string]bool{}
+	for _, entry := range cases {
+		if entry.Status != 201 {
+			if entry.Status != 400 || entry.Response.Code != -1 {
+				t.Fatalf("unexpected rejected HTTP case: %+v", entry)
+			}
+			continue // Rejected configurations never enter the runtime pipeline.
+		}
+		t.Run(entry.Name, func(t *testing.T) {
+			want, ok := wants[entry.Name]
+			if !ok || seen[entry.Name] {
+				t.Fatalf("unexpected or duplicate successful case: %s", entry.Name)
+			}
+			seen[entry.Name] = true
+			if entry.Response.Code != 0 || entry.Response.Data.Protocol != want.protocol || len(entry.Response.Data.Properties) != 1 {
+				t.Fatalf("unexpected successful HTTP response: %+v", entry.Response)
+			}
+			device := config.DeviceConfig{ID: "device-" + entry.Name, SerialNumber: "SN-" + entry.Name,
+				Protocol: entry.Response.Data.Protocol, AcqFreq: 1000, Properties: entry.Response.Data.Properties,
+				Params: []config.DeviceParam{{Key: "slaveID", Type: "string", Value: json.RawMessage(`"1"`)}},
+			}
+			device.GatewayInfo.ID = "gateway-contract-1"
+			device.GatewayInfo.IP = "127.0.0.1"
+			device.GatewayInfo.Port = 502
+			runtime, err := config.BuildRuntimeConfig([]config.DeviceConfig{device})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt, ok := runtime.DeviceBySerial[device.SerialNumber]
+			if !ok {
+				t.Fatal("successful HTTP configuration is missing from the runtime")
+			}
+			var read, write []string
+			collect := func(target *[]string, dataType, propertyType string, explicit bool) {
+				t.Helper()
+				if propertyType != "float" || explicit != want.explicit {
+					t.Fatalf("business/explicit type changed: propertyType=%s explicit=%v, want float/%v", propertyType, explicit, want.explicit)
+				}
+				*target = append(*target, dataType)
+			}
+			switch want.protocol {
+			case "modbus_rtu":
+				for _, point := range rt.ReadPoints {
+					collect(&read, point.DataType, point.PropertyType, point.DataTypeExplicit)
+				}
+				for _, command := range runtime.DeviceCmdBySerial[device.SerialNumber] {
+					collect(&write, command.DataType, command.PropertyType, command.DataTypeExplicit)
+					if command.FunctionCode != 6 || command.Quantity != 1 {
+						t.Fatalf("FC06 command shape changed: %+v", command)
+					}
+				}
+			case "bacnet":
+				for _, point := range rt.BacnetReadPoints {
+					collect(&read, point.DataType, point.PropertyType, point.DataTypeExplicit)
+				}
+				for _, command := range rt.BacnetWritePoints {
+					collect(&write, command.DataType, command.PropertyType, command.DataTypeExplicit)
+				}
+			case "opcua":
+				for _, point := range rt.OpcuaReadPoints {
+					collect(&read, point.DataType, point.PropertyType, point.DataTypeExplicit)
+				}
+				for _, command := range rt.OpcuaWritePoints {
+					collect(&write, command.DataType, command.PropertyType, command.DataTypeExplicit)
+				}
+			case "mqtt":
+				for _, point := range rt.MqttReadPoints {
+					collect(&read, point.DataType, point.PropertyType, point.DataTypeExplicit)
+				}
+				for _, command := range rt.MqttWritePoints {
+					collect(&write, command.DataType, command.PropertyType, command.DataTypeExplicit)
+				}
+			}
+			if !reflect.DeepEqual(read, want.read) || !reflect.DeepEqual(write, want.write) {
+				t.Fatalf("runtime types = %v/%v, want %v/%v", read, write, want.read, want.write)
+			}
+		})
+	}
+	if len(seen) != len(wants) {
+		t.Fatalf("only %d of %d successful contract cases were consumed", len(seen), len(wants))
 	}
 }

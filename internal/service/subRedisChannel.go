@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
+
 	"multiple-protocol-controller/internal/config"
 	"multiple-protocol-controller/internal/control"
 	"multiple-protocol-controller/internal/store"
@@ -20,20 +22,9 @@ func SubRedisChannel(ctx context.Context, redisClient *store.RedisClient, cfg *c
 		config.CfgChangeCh: newCfgChangeHandler(func() error {
 			return GetIoTCfg(ctx, &config.IotCfgStore, cfg)
 		}),
-		config.SetDeviceProperty: func(msg *redis.Message) error {
-			// 参考mpc iot-system-base this.business!.processCommandData(data);
-			fmt.Println("Recv original command data:", msg.Payload)
-			cmdParams, err := decodeCommandPayload([]byte(msg.Payload))
-			if err != nil {
-				logger.Log.Error("device command parse error:", zap.Error(err))
-				return nil
-			}
-			sendErr := control.ProcessCommand(redisClient, cmdParams)
-			if sendErr != nil {
-				logger.Log.Error("send command error:", zap.Error(sendErr))
-			}
-			return nil
-		},
+		config.SetDeviceProperty: newCommandHandler(func(command config.Command4MPC) error {
+			return control.ProcessCommand(redisClient, command)
+		}),
 	}
 	// 带自动重连机制的订阅
 	errCh := redisClient.SubscribeWithRetry(ctx, []string{config.CfgChangeCh, config.SetDeviceProperty}, handlers)
@@ -47,6 +38,36 @@ func SubRedisChannel(ctx context.Context, redisClient *store.RedisClient, cfg *c
 		_ = redisClient.Close() // ✅ 同样关闭，释放连接池资源
 		logger.Log.Error("SubRedisChannel exited with error", zap.Error(err))
 		return err
+	}
+}
+
+// Keep dispatch synchronous: configuration notifications must not cancel or
+// overtake an in-flight command. Logs are summaries, never command values or
+// raw decoder/protocol errors (which may contain values or credentials).
+func newCommandHandler(process func(config.Command4MPC) error) func(*redis.Message) error {
+	return func(msg *redis.Message) error {
+		started := time.Now()
+		log := logger.Log
+		if log == nil {
+			log = zap.NewNop()
+		}
+		command, err := decodeCommandPayload([]byte(msg.Payload))
+		if err != nil {
+			log.Warn("device control", zap.String("command_id", ""), zap.String("stage", "receive"),
+				zap.String("result", "rejected"), zap.String("reason", "invalid_payload"),
+				zap.Int("payload_bytes", len(msg.Payload)), zap.Int64("elapsed_ms", time.Since(started).Milliseconds()))
+			return nil
+		}
+		log = log.With(zap.String("command_id", command.Uid))
+		log.Info("device control", zap.String("stage", "receive"), zap.String("result", "received"),
+			zap.Int("item_count", len(command.Data)), zap.Int64("elapsed_ms", time.Since(started).Milliseconds()))
+		if err := process(command); err != nil {
+			// A processing error can follow an earlier device write in this batch.
+			// Do not label it as proof that the command was not executed.
+			log.Warn("device control", zap.String("stage", "dispatch"), zap.String("result", "unknown"),
+				zap.String("reason", "processing_error"), zap.Int64("elapsed_ms", time.Since(started).Milliseconds()))
+		}
+		return nil
 	}
 }
 
