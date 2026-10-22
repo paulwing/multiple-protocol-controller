@@ -1,6 +1,6 @@
 # multiple-protocol-controller
 
-Go 工业设备采集与控制服务，支持 Modbus RTU/TCP、OPC UA、MQTT、BACnet/IP。读取平台发布的 Redis 配置，写实时快照、可选 InfluxDB 历史和 Judge Source。平台属性控制页面/HTTP 桥接尚未实现，不能与 MPC 已有 Redis 控制能力混为一谈。
+Go 工业设备采集与控制服务，提供 Modbus RTU、OPC UA、MQTT、BACnet/IP 的采集与控制。当前 Modbus 使用 TCP 连接传输 RTU 帧；协议工厂注册 `MODBUS_RTU`，不应将连接管理中的 TCP 命名理解为已实现原生 Modbus TCP/MBAP。读取平台发布的 Redis 配置，写实时快照、网关健康状态、可选 InfluxDB 历史和 Judge Source。平台属性控制 HTTP 已由主后台桥接 Redis，MPC 不直接承担用户鉴权或页面功能。
 
 工具链以 go.mod 为准：`go 1.23.0`，`toolchain go1.24.7`。运行前配置 `configs/config.toml` 或环境变量并保证 Redis 可达。
 
@@ -30,7 +30,13 @@ MPC 在 `set_device_current_value` 接收控制命令，并在 `device_current_v
 - `unverified`：指令已成功下发，但属性只写或协议无法可靠回读，设备最终状态不可验证；
 - `failed`：写入、协议回执、回读或目标值验证失败。
 
-Modbus、OPC UA 和 BACnet 的可读写属性会执行写后回读；MQTT 发布成功按 `unverified` 返回。回执保留原有 `control_command_result` 字段，同时增加设备级 `verification_status` 和逐属性 `attributes`，供平台后端后续接入。平台 HTTP 控制接口、用户权限、设备 scope 和操作审计仍由 `iot-platform-backend` 实现。
+Modbus、OPC UA 和 BACnet 的可读写属性会执行写后回读；MQTT 发布成功按 `unverified` 返回。回执保留 `control_command_result`，同时包含设备级 `verification_status` 与逐属性 `attributes`，已由平台后端消费。平台 HTTP 控制接口、用户权限、设备 scope 和操作记录由 `iot-platform-backend` 负责，操作说明见[设备控制手册](../documents/user-manual/device-control.md)。
+
+### 点位类型与网关健康
+
+四协议的每个读/写项可独立配置可选 `dataType`；缺失、null 或空值沿用属性 `type`。新显式类型执行对应协议的校验与转换，旧配置保留回退语义。属性枚举与实际编码类型分开，历史 `data_type` 仍记录业务类型；支持范围和字段位置见[MPC 架构](../documents/architecture/mpc.md#点位类型与属性类型)。
+
+纯 Modbus 网关的在线状态由独立发布器维护 `gateway:status:{id}`，与子设备采集成败无关。Linux 使用不消费业务数据的 socket 检查；其他平台返回 Unknown，不应据此进行生产在线状态验收。目标 ID 与探测结果不一致或代次过期时丢弃本轮。格式、TTL、限制及配套顺序见[实时 Redis 对接](../documents/integration/realtime-data-redis.md)。
 
 ### How to run
 - local

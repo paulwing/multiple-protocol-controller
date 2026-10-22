@@ -1,6 +1,6 @@
 # multiple-protocol-controller 项目总结
 
-2026-08-31 按当前 master 核对。完整配置和运行步骤见 [README](README.md)，系统级说明见[文档仓库 MPC 架构](../documents/architecture/mpc.md)。
+2026-10-22 按 `0a09019` 核对主要入口、点位类型与网关健康实现；这不是部署或实设备验收记录。完整配置和运行步骤见 [README](README.md)，系统级说明见[文档仓库 MPC 架构](../documents/architecture/mpc.md)。
 
 ## 主流程
 
@@ -14,7 +14,7 @@
 | --- | --- |
 | internal/config | 原始配置、参数、按 ID/编号索引的运行时快照 |
 | internal/service | Redis 快照加载、配置/控制订阅、心跳 |
-| internal/protocol | Modbus RTU/TCP、OPC UA、MQTT、BACnet/IP 的解析/编码 |
+| internal/protocol | Modbus RTU 帧、OPC UA、MQTT、BACnet/IP 的解析/编码；不宣称原生 Modbus TCP/MBAP |
 | internal/conn | TCP、OPC UA、MQTT、BACnet 连接与读写 |
 | internal/collector | 四类 worker、实时写入、InfluxDB 历史、Judge Source |
 | internal/control | 命令分派、超时和回执 |
@@ -28,6 +28,7 @@
 - 历史：实时写入成功后入内存队列，由后台 worker 批量写 InfluxDB；队列满或重试耗尽会丢弃相应历史点。
 - Judge：通过独立有界队列向 Redis Pub/Sub 频道 `iot:judge:device-events` 发布严格五字段事件；与实时缓存、历史写入分别限流，没有持久补发或消费组。详见[Source 契约](docs/对接文档/MPC规则事件发布.md)。
 - 服务心跳：server:status:mpc。
+- 纯 Modbus 网关健康：gateway:status:{网关ID}，独立于子设备属性采集；配置快照与探测目标不一致时本轮不刷新，下一轮重取目标。该检查与 Redis 写入不是跨系统原子事务。
 
 ## 控制语义
 
@@ -35,7 +36,9 @@ SubRedisChannel 已订阅 set_device_current_value，并调用 ProcessCommand；
 
 控制分支涵盖 Modbus、OPC UA、MQTT、BACnet。运行时同时校验属性可写标记与协议写点位，不再为只读属性建立控制映射。Modbus、OPC UA、BACnet 的可读写属性在写入成功后回读目标属性并比较；只写属性及 MQTT 发布成功返回 `unverified`，不会误报设备已执行。协议回执、回读或目标值验证失败返回 `failed`。
 
-`device_current_value_response` 保留历史 `control_command_result`，并增加 `verification_status` 与逐属性 `attributes`。MPC 有完整 Redis 控制和回执能力不代表平台已有 HTTP 控制接口；用户权限、设备 scope、命令追踪和审计仍由 iot-platform-backend 接入。
+`device_current_value_response` 保留历史 `control_command_result`，并包含 `verification_status` 与逐属性 `attributes`。平台后端已提供 HTTP 桥接、用户权限、设备 scope、命令追踪和控制记录；MPC 负责设备通信，不替代平台权限边界。
+
+点位级 `dataType` 可独立于业务属性 `type`；未指定时沿用旧类型。运行时以 `DataTypeExplicit` 区分新显式转换和旧行为，`PropertyType` 保留业务含义及历史标签。精确整数、读写异型比较仍受协议及 JSON/浏览器精度限制，见[类型契约](../documents/architecture/mpc.md#点位类型与属性类型)。
 
 ## MQTT
 
